@@ -1,8 +1,8 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { boolean, pgTable, real, text, timestamp } from "drizzle-orm/pg-core";
 import { idColumn, timestamps, createdAtOnly } from "./common";
 import { users } from "./identity";
 
-export const employees = sqliteTable("employees", {
+export const employees = pgTable("employees", {
   id: idColumn(),
   userId: text("user_id")
     .notNull()
@@ -10,7 +10,7 @@ export const employees = sqliteTable("employees", {
     .references(() => users.id, { onDelete: "cascade" }),
   employeeCode: text("employee_code").notNull().unique(), // e.g. PMS-0007
   photoFileId: text("photo_file_id"),
-  dob: integer("dob", { mode: "timestamp" }),
+  dob: timestamp("dob"),
   gender: text("gender"),
   mobile: text("mobile").notNull(),
   altMobile: text("alt_mobile"),
@@ -23,7 +23,7 @@ export const employees = sqliteTable("employees", {
   emergencyContactPhone: text("emergency_contact_phone"),
 
   // Employment
-  joiningDate: integer("joining_date", { mode: "timestamp" }),
+  joiningDate: timestamp("joining_date"),
   designation: text("designation"),
   department: text("department"),
   reportingManagerId: text("reporting_manager_id"), // self-FK, see relations.ts
@@ -34,7 +34,7 @@ export const employees = sqliteTable("employees", {
   status: text("status", { enum: ["active", "on_leave", "exited"] })
     .notNull()
     .default("active"),
-  exitDate: integer("exit_date", { mode: "timestamp" }),
+  exitDate: timestamp("exit_date"),
 
   // Payroll. Nullable — set by owner/manager, never shown to the employee's
   // peers. Used only to compute the per-day loss-of-pay deduction when
@@ -44,11 +44,11 @@ export const employees = sqliteTable("employees", {
   // this becomes the system of record for actual pay runs.
   monthlySalary: real("monthly_salary"),
 
-  onboardingCompletedAt: integer("onboarding_completed_at", { mode: "timestamp" }),
+  onboardingCompletedAt: timestamp("onboarding_completed_at"),
   ...timestamps(),
 });
 
-export const employeeDocuments = sqliteTable("employee_documents", {
+export const employeeDocuments = pgTable("employee_documents", {
   id: idColumn(),
   employeeId: text("employee_id")
     .notNull()
@@ -58,9 +58,9 @@ export const employeeDocuments = sqliteTable("employee_documents", {
   }).notNull(),
   fileId: text("file_id").notNull(),
   number: text("number"), // e.g. PAN number, ID number (kept minimal, not validated as sensitive-store)
-  issuedDate: integer("issued_date", { mode: "timestamp" }),
-  expiryDate: integer("expiry_date", { mode: "timestamp" }),
-  verified: integer("verified", { mode: "boolean" }).notNull().default(false),
+  issuedDate: timestamp("issued_date"),
+  expiryDate: timestamp("expiry_date"),
+  verified: boolean("verified").notNull().default(false),
   uploadedBy: text("uploaded_by").references(() => users.id),
   ...createdAtOnly(),
 });

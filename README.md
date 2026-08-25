@@ -111,12 +111,11 @@ into a native app later. Given that:
 - **Next.js (App Router) + TypeScript** — one codebase for the PWA today and (via Capacitor, see
   below) an app-store build later; free to build and host (Vercel's free tier covers this project's
   traffic comfortably)
-- **Drizzle ORM + SQLite locally / Postgres in production** — a real relational schema with proper
-  foreign keys throughout (never plain-text references), zero licensing cost, and a two-file swap to
-  move from local SQLite to a free-tier hosted Postgres (Supabase or Neon) — see below.
-  *(Note: this project started on Prisma; it was swapped to Drizzle only because this sandbox's
-  network policy blocks Prisma's engine-binary download — worth knowing if you ever see Prisma
-  mentioned elsewhere, but it has no bearing on your deployment.)*
+- **Drizzle ORM + Postgres** — a real relational schema with proper foreign keys throughout (never
+  plain-text references), zero licensing cost on a free-tier hosted Postgres (Supabase or Neon) — see
+  below. *(Note: this project started on Prisma; it was swapped to Drizzle only because this
+  sandbox's network policy blocks Prisma's engine-binary download — worth knowing if you ever see
+  Prisma mentioned elsewhere, but it has no bearing on your deployment.)*
 - **Custom DB-backed sessions** instead of a heavier auth framework — this needed per-device session
   rows for the "manage my signed-in devices" requirement, which off-the-shelf libraries fought
   against; a plain `userSessions` table with an httpOnly cookie is ~100 lines and fully auditable
@@ -129,42 +128,36 @@ into a native app later. Given that:
 - **IndexedDB-backed offline queue** — a plain browser API, no external dependency, so a site visit
   check-in made with no signal is never silently lost
 
-## Moving to Postgres for production
+## Database: Postgres
 
-Local dev uses a SQLite file so there's nothing to sign up for to start working. Production should
-use Postgres — a free-tier Supabase or Neon project is enough for this studio's scale. The schema
-itself doesn't change; only two files do:
+The app runs on Postgres end to end (`src/db/schema/*` uses `drizzle-orm/pg-core`, `src/db/client.ts`
+connects via `drizzle-orm/postgres-js`). Set `DATABASE_URL` to a Postgres connection string — a
+free-tier Supabase or Neon project is enough for this studio's scale — then:
 
-1. **`src/db/client.ts`** — replace the `better-sqlite3` client with `drizzle-orm/postgres-js`:
-   ```ts
-   import postgres from "postgres";
-   import { drizzle } from "drizzle-orm/postgres-js";
-   import * as schema from "./schema";
+```
+npm run db:push   # creates/updates all tables from the schema
+npm run db:seed   # optional: seeds demo roles, employees, leave types, one project/site
+```
 
-   const client = postgres(process.env.DATABASE_URL!);
-   export const db = drizzle(client, { schema });
-   ```
-2. **`drizzle.config.ts`** — change `dialect: "sqlite"` to `dialect: "postgresql"` and point
-   `dbCredentials` at `process.env.DATABASE_URL`.
-
-Then `npm run db:push` against the Postgres URL and `npm run db:seed` (or skip seeding and create
-real accounts). Everything else — every server action, every API route, every query — is unchanged,
-because Drizzle's query builder used throughout is dialect-agnostic for the patterns this app uses.
+*(This project started on a local SQLite file for zero-config dev; it has since been fully migrated
+to Postgres so local dev and production share one code path and one set of migrations.)*
 
 ### Deploying (free tier)
 
 1. Push this repo to GitHub.
-2. Create a free Supabase or Neon Postgres project; copy its connection string.
+2. Create a free Supabase or Neon Postgres project; copy its connection string into `DATABASE_URL`.
 3. Import the repo into Vercel (free Hobby tier). Set the `DATABASE_URL` environment variable to
    the Postgres connection string, and set `WEBAUTHN_RP_ID` / `WEBAUTHN_ORIGIN` to your real domain
    (e.g. `panchmeru.vercel.app` and `https://panchmeru.vercel.app`) — WebAuthn is origin-locked and
    won't work if these are left as `localhost` in production.
-4. File uploads currently save to local disk under `/uploads` and are always served through
-   `/api/files/[id]` (never a public path) — this is the deliberate swap point for S3-compatible
-   storage (Supabase Storage's free tier, Cloudflare R2, etc.) before going to production, since
-   Vercel's filesystem isn't persistent between deploys. Swapping `src/lib/storage.ts`'s `saveFile`
-   /`readStoredFile` to call the storage SDK instead of `fs` is the only change needed; every caller
-   already goes through those two functions.
+4. **Known gap before going fully live:** file uploads (employee documents, task photos, drawings,
+   check-in selfies) currently save to local disk under `/uploads`, served only through
+   `/api/files/[id]` (never a public path). Vercel's filesystem is not persistent between requests,
+   so uploads will not survive there yet. `src/lib/storage.ts`'s `saveFile`/`readStoredFile` are the
+   one deliberate swap point for S3-compatible storage (Supabase Storage's free tier, Cloudflare R2,
+   or Vercel Blob) — every caller already goes through those two functions, so this is a contained
+   follow-up, not a redesign. Everything that doesn't touch file uploads (employees, attendance,
+   leave/payroll, tasks, projects, sites, materials) works fully on Vercel + Postgres today.
 
 ## Installing as an app today, wrapping natively later
 

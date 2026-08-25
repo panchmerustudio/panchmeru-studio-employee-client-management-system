@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { boolean, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { idColumn, timestamps, createdAtOnly } from "./common";
 
 /**
@@ -6,22 +6,22 @@ import { idColumn, timestamps, createdAtOnly } from "./common";
  * Employee) but modeled as a table + permission join so new roles or
  * finer-grained permissions can be added later without a schema change.
  */
-export const roles = sqliteTable("roles", {
+export const roles = pgTable("roles", {
   id: idColumn(),
   key: text("key").notNull().unique(), // e.g. "owner", "manager", "supervisor", "employee"
   name: text("name").notNull(),
   description: text("description"),
-  isSystem: integer("is_system", { mode: "boolean" }).notNull().default(false),
+  isSystem: boolean("is_system").notNull().default(false),
   ...createdAtOnly(),
 });
 
-export const permissions = sqliteTable("permissions", {
+export const permissions = pgTable("permissions", {
   id: idColumn(),
   key: text("key").notNull().unique(), // e.g. "task.approve", "employee.manage"
   description: text("description"),
 });
 
-export const rolePermissions = sqliteTable(
+export const rolePermissions = pgTable(
   "role_permissions",
   {
     id: idColumn(),
@@ -41,7 +41,7 @@ export const rolePermissions = sqliteTable(
  * login, kept as a *separate* identity space so a client login can never
  * collide with staff permissions.
  */
-export const users = sqliteTable("users", {
+export const users = pgTable("users", {
   id: idColumn(),
   name: text("name").notNull(),
   email: text("email").unique(),
@@ -53,8 +53,8 @@ export const users = sqliteTable("users", {
   status: text("status", { enum: ["active", "inactive", "suspended"] })
     .notNull()
     .default("active"),
-  mustChangePassword: integer("must_change_password", { mode: "boolean" }).notNull().default(false),
-  lastLoginAt: integer("last_login_at", { mode: "timestamp" }),
+  mustChangePassword: boolean("must_change_password").notNull().default(false),
+  lastLoginAt: timestamp("last_login_at"),
   ...timestamps(),
 });
 
@@ -64,7 +64,7 @@ export const users = sqliteTable("users", {
  * biometric data — only the public key + counter the WebAuthn spec
  * exposes to the server, exactly like any password manager would.
  */
-export const webauthnCredentials = sqliteTable("webauthn_credentials", {
+export const webauthnCredentials = pgTable("webauthn_credentials", {
   id: idColumn(),
   userId: text("user_id")
     .notNull()
@@ -73,14 +73,14 @@ export const webauthnCredentials = sqliteTable("webauthn_credentials", {
   publicKey: text("public_key").notNull(), // base64
   counter: integer("counter").notNull().default(0),
   deviceType: text("device_type"),
-  transports: text("transports", { mode: "json" }).$type<string[]>(),
+  transports: jsonb("transports").$type<string[]>(),
   nickname: text("nickname"), // "Rahul's Phone"
-  lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
+  lastUsedAt: timestamp("last_used_at"),
   ...createdAtOnly(),
 });
 
 /** Registered devices — used for attendance device-binding + push tokens. */
-export const devices = sqliteTable("devices", {
+export const devices = pgTable("devices", {
   id: idColumn(),
   userId: text("user_id")
     .notNull()
@@ -88,22 +88,22 @@ export const devices = sqliteTable("devices", {
   platform: text("platform"), // "ios" | "android" | "web"
   deviceName: text("device_name"),
   pushToken: text("push_token"),
-  isTrusted: integer("is_trusted", { mode: "boolean" }).notNull().default(true),
-  lastSeenAt: integer("last_seen_at", { mode: "timestamp" }),
+  isTrusted: boolean("is_trusted").notNull().default(true),
+  lastSeenAt: timestamp("last_seen_at"),
   ...createdAtOnly(),
 });
 
 /** Server-side session tracking so sessions can be listed/revoked per device. */
-export const userSessions = sqliteTable("user_sessions", {
+export const userSessions = pgTable("user_sessions", {
   id: idColumn(),
   userId: text("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
   deviceId: text("device_id").references(() => devices.id, { onDelete: "set null" }),
   sessionToken: text("session_token").notNull().unique(),
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
-  revokedAt: integer("revoked_at", { mode: "timestamp" }),
+  revokedAt: timestamp("revoked_at"),
   ...createdAtOnly(),
 });

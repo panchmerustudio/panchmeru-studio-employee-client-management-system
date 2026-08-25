@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { boolean, integer, pgTable, real, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { idColumn, createdAtOnly } from "./common";
 import { employees } from "./employees";
 import { geofences, siteVisits } from "./sites";
@@ -12,7 +12,7 @@ import { devices } from "./identity";
  * duplicate or fraudulent record — the unique index enforces "at most
  * once" no matter how many times the mobile app retries.
  */
-export const attendanceEvents = sqliteTable(
+export const attendanceEvents = pgTable(
   "attendance_events",
   {
     id: idColumn(),
@@ -32,7 +32,7 @@ export const attendanceEvents = sqliteTable(
     // out — the lat/long/accuracy above are always captured regardless.
     address: text("address"),
     geofenceId: text("geofence_id").references(() => geofences.id),
-    withinGeofence: integer("within_geofence", { mode: "boolean" }).notNull(),
+    withinGeofence: boolean("within_geofence").notNull(),
     distanceMeters: real("distance_meters"),
 
     deviceId: text("device_id").references(() => devices.id),
@@ -40,8 +40,8 @@ export const attendanceEvents = sqliteTable(
     selfieFileId: text("selfie_file_id").references(() => files.id),
 
     clientEventId: text("client_event_id").notNull().unique(),
-    capturedAtClient: integer("captured_at_client", { mode: "timestamp" }).notNull(),
-    syncedAt: integer("synced_at", { mode: "timestamp" }),
+    capturedAtClient: timestamp("captured_at_client").notNull(),
+    syncedAt: timestamp("synced_at"),
 
     ...createdAtOnly(),
   },
@@ -49,7 +49,7 @@ export const attendanceEvents = sqliteTable(
 );
 
 /** Derived per-day summary, recomputed from events — never hand-edited. */
-export const attendanceRecords = sqliteTable(
+export const attendanceRecords = pgTable(
   "attendance_records",
   {
     id: idColumn(),

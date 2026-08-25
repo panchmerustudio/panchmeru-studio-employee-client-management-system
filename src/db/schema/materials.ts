@@ -1,10 +1,10 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { pgTable, real, text, timestamp } from "drizzle-orm/pg-core";
 import { idColumn, createdAtOnly } from "./common";
 import { users } from "./identity";
 import { sites } from "./sites";
 import { files } from "./files";
 
-export const materialRequests = sqliteTable("material_requests", {
+export const materialRequests = pgTable("material_requests", {
   id: idColumn(),
   siteId: text("site_id")
     .notNull()
@@ -12,7 +12,7 @@ export const materialRequests = sqliteTable("material_requests", {
   requestedBy: text("requested_by")
     .notNull()
     .references(() => users.id),
-  requiredDate: integer("required_date", { mode: "timestamp" }),
+  requiredDate: timestamp("required_date"),
   reason: text("reason"),
   status: text("status", {
     enum: ["pending", "approved", "rejected", "ordered", "received"],
@@ -20,12 +20,12 @@ export const materialRequests = sqliteTable("material_requests", {
     .notNull()
     .default("pending"),
   reviewedBy: text("reviewed_by").references(() => users.id),
-  reviewedAt: integer("reviewed_at", { mode: "timestamp" }),
+  reviewedAt: timestamp("reviewed_at"),
   reviewComment: text("review_comment"),
   ...createdAtOnly(),
 });
 
-export const materialRequestItems = sqliteTable("material_request_items", {
+export const materialRequestItems = pgTable("material_request_items", {
   id: idColumn(),
   materialRequestId: text("material_request_id")
     .notNull()

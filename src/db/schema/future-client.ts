@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { boolean, integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { idColumn, timestamps, createdAtOnly } from "./common";
 import { users } from "./identity";
 import { employees } from "./employees";
@@ -18,7 +18,7 @@ import { files } from "./files";
  * employee or client ever sees them until the studio turns the module on.
  */
 
-export const clients = sqliteTable("clients", {
+export const clients = pgTable("clients", {
   id: idColumn(),
   name: text("name").notNull(),
   companyName: text("company_name"),
@@ -34,7 +34,7 @@ export const clients = sqliteTable("clients", {
 });
 
 /** A client may have several contacts: owner, spouse, architect, coordinator, rep... (section 8). */
-export const clientContacts = sqliteTable("client_contacts", {
+export const clientContacts = pgTable("client_contacts", {
   id: idColumn(),
   clientId: text("client_id")
     .notNull()
@@ -43,12 +43,12 @@ export const clientContacts = sqliteTable("client_contacts", {
   relationship: text("relationship"), // "owner" | "spouse" | "architect" | "family_member" | "coordinator" | "company_representative"
   mobile: text("mobile"),
   email: text("email"),
-  isPrimary: integer("is_primary", { mode: "boolean" }).notNull().default(false),
+  isPrimary: boolean("is_primary").notNull().default(false),
   ...createdAtOnly(),
 });
 
 /** Future client portal login — a deliberately separate identity space from staff `users` (section 9, 50). */
-export const clientUsers = sqliteTable("client_users", {
+export const clientUsers = pgTable("client_users", {
   id: idColumn(),
   clientId: text("client_id")
     .notNull()
@@ -57,7 +57,7 @@ export const clientUsers = sqliteTable("client_users", {
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash"),
   status: text("status", { enum: ["active", "invited", "disabled"] }).notNull().default("invited"),
-  lastLoginAt: integer("last_login_at", { mode: "timestamp" }),
+  lastLoginAt: timestamp("last_login_at"),
   ...createdAtOnly(),
 });
 
@@ -66,7 +66,7 @@ export const clientUsers = sqliteTable("client_users", {
  * single most emphasized requirement in the future spec). Distinguishes
  * employee-sent vs owner-sent, tracks delivery/view/response per share.
  */
-export const clientDrawingShares = sqliteTable("client_drawing_shares", {
+export const clientDrawingShares = pgTable("client_drawing_shares", {
   id: idColumn(),
   documentVersionId: text("document_version_id")
     .notNull()
@@ -87,7 +87,7 @@ export const clientDrawingShares = sqliteTable("client_drawing_shares", {
     .notNull()
     .default("sent"),
   viewStatus: text("view_status", { enum: ["not_viewed", "viewed"] }).notNull().default("not_viewed"),
-  viewedAt: integer("viewed_at", { mode: "timestamp" }),
+  viewedAt: timestamp("viewed_at"),
   responseStatus: text("response_status", {
     enum: ["awaiting_response", "revision_requested", "approved"],
   })
@@ -97,7 +97,7 @@ export const clientDrawingShares = sqliteTable("client_drawing_shares", {
 });
 
 /** REVISION REQUEST #NNN chain (sections 12, 45, 79). */
-export const clientRevisionRequests = sqliteTable("client_revision_requests", {
+export const clientRevisionRequests = pgTable("client_revision_requests", {
   id: idColumn(),
   sequenceNumber: integer("sequence_number").notNull(), // human-facing "#001"
   documentVersionId: text("document_version_id")
@@ -118,12 +118,12 @@ export const clientRevisionRequests = sqliteTable("client_revision_requests", {
   // the CLIENT REQUEST -> INTERNAL TASK link (section 79)
   internalTaskId: text("internal_task_id").references(() => tasks.id),
   revisedDocumentVersionId: text("revised_document_version_id").references(() => documentVersions.id),
-  resubmissionDate: integer("resubmission_date", { mode: "timestamp" }),
+  resubmissionDate: timestamp("resubmission_date"),
   ...timestamps(),
 });
 
 /** Text / voice / photo / annotated-drawing / document comments from the client (section 13). */
-export const clientComments = sqliteTable("client_comments", {
+export const clientComments = pgTable("client_comments", {
   id: idColumn(),
   documentVersionId: text("document_version_id").references(() => documentVersions.id),
   revisionRequestId: text("revision_request_id").references(() => clientRevisionRequests.id),
@@ -137,7 +137,7 @@ export const clientComments = sqliteTable("client_comments", {
 });
 
 /** Drawing markup — arrows / highlights / pins tied to a location on one version (section 14). */
-export const clientDrawingAnnotations = sqliteTable("client_drawing_annotations", {
+export const clientDrawingAnnotations = pgTable("client_drawing_annotations", {
   id: idColumn(),
   documentVersionId: text("document_version_id")
     .notNull()
@@ -148,13 +148,13 @@ export const clientDrawingAnnotations = sqliteTable("client_drawing_annotations"
   // normalized 0-1 coordinates against the rendered drawing, plus free-form shape data
   positionX: text("position_x"),
   positionY: text("position_y"),
-  shapeData: text("shape_data", { mode: "json" }),
+  shapeData: jsonb("shape_data"),
   comment: text("comment"),
   ...createdAtOnly(),
 });
 
 /** Final, immutable record of an approval (sections 49, 12). */
-export const clientApprovals = sqliteTable("client_approvals", {
+export const clientApprovals = pgTable("client_approvals", {
   id: idColumn(),
   documentVersionId: text("document_version_id")
     .notNull()
@@ -167,12 +167,12 @@ export const clientApprovals = sqliteTable("client_approvals", {
     .notNull()
     .default("client_portal"),
   approvalMessage: text("approval_message"),
-  sessionMetadata: text("session_metadata", { mode: "json" }),
+  sessionMetadata: jsonb("session_metadata"),
   ...createdAtOnly(),
 });
 
 /** Project-scoped free-form messaging (never a generic social chat, section 43). */
-export const clientMessages = sqliteTable("client_messages", {
+export const clientMessages = pgTable("client_messages", {
   id: idColumn(),
   clientId: text("client_id")
     .notNull()
@@ -191,7 +191,7 @@ export const clientMessages = sqliteTable("client_messages", {
 });
 
 /** The searchable per-client/per-project timeline (sections 17, 46, 74). */
-export const clientActivities = sqliteTable("client_activities", {
+export const clientActivities = pgTable("client_activities", {
   id: idColumn(),
   clientId: text("client_id")
     .notNull()
@@ -204,7 +204,7 @@ export const clientActivities = sqliteTable("client_activities", {
   ...createdAtOnly(),
 });
 
-export const clientNotifications = sqliteTable("client_notifications", {
+export const clientNotifications = pgTable("client_notifications", {
   id: idColumn(),
   clientUserId: text("client_user_id")
     .notNull()
@@ -214,22 +214,22 @@ export const clientNotifications = sqliteTable("client_notifications", {
   message: text("message").notNull(),
   relatedEntityType: text("related_entity_type"),
   relatedEntityId: text("related_entity_id"),
-  readAt: integer("read_at", { mode: "timestamp" }),
+  readAt: timestamp("read_at"),
   ...createdAtOnly(),
 });
 
-export const clientMeetings = sqliteTable("client_meetings", {
+export const clientMeetings = pgTable("client_meetings", {
   id: idColumn(),
   clientId: text("client_id")
     .notNull()
     .references(() => clients.id),
   projectId: text("project_id").references(() => projects.id),
   siteId: text("site_id").references(() => sites.id),
-  meetingDate: integer("meeting_date", { mode: "timestamp" }).notNull(),
-  participants: text("participants", { mode: "json" }),
+  meetingDate: timestamp("meeting_date").notNull(),
+  participants: jsonb("participants"),
   agenda: text("agenda"),
   notes: text("notes"),
   voiceNoteId: text("voice_note_id"),
-  actionItemTaskIds: text("action_item_task_ids", { mode: "json" }).$type<string[]>(),
+  actionItemTaskIds: jsonb("action_item_task_ids").$type<string[]>(),
   ...createdAtOnly(),
 });

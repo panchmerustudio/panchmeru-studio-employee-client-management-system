@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { boolean, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { idColumn, timestamps, createdAtOnly } from "./common";
 import { users } from "./identity";
 import { employees } from "./employees";
@@ -10,14 +10,14 @@ import { employees } from "./employees";
  * can be linked retroactively. Project types are data, not an enum, so
  * new types don't require a migration.
  */
-export const projectTypes = sqliteTable("project_types", {
+export const projectTypes = pgTable("project_types", {
   id: idColumn(),
   key: text("key").notNull().unique(),
   name: text("name").notNull(),
-  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  active: boolean("active").notNull().default(true),
 });
 
-export const projects = sqliteTable("projects", {
+export const projects = pgTable("projects", {
   id: idColumn(),
   name: text("name").notNull(),
   projectTypeId: text("project_type_id").references(() => projectTypes.id),
@@ -27,15 +27,15 @@ export const projects = sqliteTable("projects", {
   })
     .notNull()
     .default("active"),
-  startDate: integer("start_date", { mode: "timestamp" }),
-  expectedCompletion: integer("expected_completion", { mode: "timestamp" }),
+  startDate: timestamp("start_date"),
+  expectedCompletion: timestamp("expected_completion"),
   createdBy: text("created_by")
     .notNull()
     .references(() => users.id),
   ...timestamps(),
 });
 
-export const projectMembers = sqliteTable("project_members", {
+export const projectMembers = pgTable("project_members", {
   id: idColumn(),
   projectId: text("project_id")
     .notNull()
@@ -47,14 +47,14 @@ export const projectMembers = sqliteTable("project_members", {
   ...createdAtOnly(),
 });
 
-export const projectMilestones = sqliteTable("project_milestones", {
+export const projectMilestones = pgTable("project_milestones", {
   id: idColumn(),
   projectId: text("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  dueDate: integer("due_date", { mode: "timestamp" }),
-  completedAt: integer("completed_at", { mode: "timestamp" }),
+  dueDate: timestamp("due_date"),
+  completedAt: timestamp("completed_at"),
   status: text("status", { enum: ["pending", "in_progress", "done", "missed"] })
     .notNull()
     .default("pending"),

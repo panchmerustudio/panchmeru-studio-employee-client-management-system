@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { boolean, pgTable, text } from "drizzle-orm/pg-core";
 import { idColumn } from "./common";
 import { users } from "./identity";
 
@@ -8,11 +8,11 @@ import { users } from "./identity";
  * Client Portal, Drawing Approvals, Commercials, Vendors, etc. Turning a
  * flag on never requires a schema change — the tables already exist.
  */
-export const featureFlags = sqliteTable("feature_flags", {
+export const featureFlags = pgTable("feature_flags", {
   id: idColumn(),
   key: text("key").notNull().unique(),
   name: text("name").notNull(),
   description: text("description"),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  enabled: boolean("enabled").notNull().default(false),
   updatedBy: text("updated_by").references(() => users.id),
 });

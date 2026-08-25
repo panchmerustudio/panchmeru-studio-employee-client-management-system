@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, pgTable, text } from "drizzle-orm/pg-core";
 import { idColumn, createdAtOnly } from "./common";
 import { users } from "./identity";
 
@@ -10,7 +10,7 @@ import { users } from "./identity";
  * file contents, only metadata + a storage key, and access is always
  * brokered through a signed/short-lived URL (see /api/files/[id]).
  */
-export const files = sqliteTable("files", {
+export const files = pgTable("files", {
   id: idColumn(),
   originalName: text("original_name").notNull(),
   storageKey: text("storage_key").notNull(), // relative path / object key
@@ -37,7 +37,7 @@ export const files = sqliteTable("files", {
 });
 
 /** Voice note: always retains the original audio + (optional) transcript. */
-export const voiceNotes = sqliteTable("voice_notes", {
+export const voiceNotes = pgTable("voice_notes", {
   id: idColumn(),
   audioFileId: text("audio_file_id")
     .notNull()

@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { boolean, integer, jsonb, pgTable, real, text, timestamp } from "drizzle-orm/pg-core";
 import { idColumn, timestamps, createdAtOnly } from "./common";
 import { users } from "./identity";
 import { employees } from "./employees";
@@ -6,18 +6,18 @@ import { projects } from "./projects";
 import { files } from "./files";
 
 /** A geofence guards either an office location or a site location. */
-export const geofences = sqliteTable("geofences", {
+export const geofences = pgTable("geofences", {
   id: idColumn(),
   name: text("name").notNull(),
   type: text("type", { enum: ["office", "site"] }).notNull(),
   latitude: real("latitude").notNull(),
   longitude: real("longitude").notNull(),
   radiusMeters: integer("radius_meters").notNull().default(150),
-  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  active: boolean("active").notNull().default(true),
   ...createdAtOnly(),
 });
 
-export const sites = sqliteTable("sites", {
+export const sites = pgTable("sites", {
   id: idColumn(),
   name: text("name").notNull(),
   projectId: text("project_id")
@@ -38,13 +38,13 @@ export const sites = sqliteTable("sites", {
     .notNull()
     .default("normal"),
   healthReason: text("health_reason"), // human-readable "No visit for 6 days"
-  startDate: integer("start_date", { mode: "timestamp" }),
-  expectedCompletion: integer("expected_completion", { mode: "timestamp" }),
+  startDate: timestamp("start_date"),
+  expectedCompletion: timestamp("expected_completion"),
   siteManagerId: text("site_manager_id").references(() => employees.id),
   ...timestamps(),
 });
 
-export const siteAssignments = sqliteTable("site_assignments", {
+export const siteAssignments = pgTable("site_assignments", {
   id: idColumn(),
   siteId: text("site_id")
     .notNull()
@@ -53,13 +53,13 @@ export const siteAssignments = sqliteTable("site_assignments", {
     .notNull()
     .references(() => employees.id, { onDelete: "cascade" }),
   role: text("role").default("team_member"),
-  startDate: integer("start_date", { mode: "timestamp" }),
-  endDate: integer("end_date", { mode: "timestamp" }),
+  startDate: timestamp("start_date"),
+  endDate: timestamp("end_date"),
   ...createdAtOnly(),
 });
 
 /** One row per "start site visit -> check out" cycle. */
-export const siteVisits = sqliteTable("site_visits", {
+export const siteVisits = pgTable("site_visits", {
   id: idColumn(),
   siteId: text("site_id")
     .notNull()
@@ -69,17 +69,17 @@ export const siteVisits = sqliteTable("site_visits", {
     .references(() => employees.id, { onDelete: "cascade" }),
   checkInEventId: text("check_in_event_id"), // FK to attendance_events, wired in relations.ts
   checkOutEventId: text("check_out_event_id"),
-  startedAt: integer("started_at", { mode: "timestamp" }).notNull(),
-  endedAt: integer("ended_at", { mode: "timestamp" }),
+  startedAt: timestamp("started_at").notNull(),
+  endedAt: timestamp("ended_at"),
   status: text("status", { enum: ["active", "completed", "abandoned"] })
     .notNull()
     .default("active"),
-  trackingEnabled: integer("tracking_enabled", { mode: "boolean" }).notNull().default(true),
+  trackingEnabled: boolean("tracking_enabled").notNull().default(true),
   ...createdAtOnly(),
 });
 
 /** GPS trail captured only while a site visit is active — stops the moment checkout happens. */
-export const siteLocationPoints = sqliteTable("site_location_points", {
+export const siteLocationPoints = pgTable("site_location_points", {
   id: idColumn(),
   siteVisitId: text("site_visit_id")
     .notNull()
@@ -87,27 +87,27 @@ export const siteLocationPoints = sqliteTable("site_location_points", {
   latitude: real("latitude").notNull(),
   longitude: real("longitude").notNull(),
   accuracy: real("accuracy"),
-  recordedAt: integer("recorded_at", { mode: "timestamp" }).notNull(),
+  recordedAt: timestamp("recorded_at").notNull(),
 });
 
 /** Walk-the-boundary capture. Never a legal survey — always labeled approximate. */
-export const siteBoundaries = sqliteTable("site_boundaries", {
+export const siteBoundaries = pgTable("site_boundaries", {
   id: idColumn(),
   siteId: text("site_id")
     .notNull()
     .references(() => sites.id, { onDelete: "cascade" }),
-  points: text("points", { mode: "json" }).$type<{ lat: number; lng: number }[]>().notNull(),
+  points: jsonb("points").$type<{ lat: number; lng: number }[]>().notNull(),
   areaSqFt: real("area_sq_ft"),
   perimeterFt: real("perimeter_ft"),
-  isManuallyAdjusted: integer("is_manually_adjusted", { mode: "boolean" }).notNull().default(false),
-  isProfessionalSurvey: integer("is_professional_survey", { mode: "boolean" }).notNull().default(false),
+  isManuallyAdjusted: boolean("is_manually_adjusted").notNull().default(false),
+  isProfessionalSurvey: boolean("is_professional_survey").notNull().default(false),
   capturedBy: text("captured_by")
     .notNull()
     .references(() => users.id),
   ...createdAtOnly(),
 });
 
-export const siteReports = sqliteTable("site_reports", {
+export const siteReports = pgTable("site_reports", {
   id: idColumn(),
   siteVisitId: text("site_visit_id")
     .notNull()
@@ -127,7 +127,7 @@ export const siteReports = sqliteTable("site_reports", {
   ...createdAtOnly(),
 });
 
-export const sitePhotos = sqliteTable("site_photos", {
+export const sitePhotos = pgTable("site_photos", {
   id: idColumn(),
   siteId: text("site_id")
     .notNull()

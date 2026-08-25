@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { pgTable, real, text, timestamp } from "drizzle-orm/pg-core";
 import { idColumn, timestamps, createdAtOnly } from "./common";
 import { users } from "./identity";
 import { projects } from "./projects";
@@ -14,7 +14,7 @@ import { clients } from "./future-client";
  * current UI.
  */
 
-export const quotations = sqliteTable("quotations", {
+export const quotations = pgTable("quotations", {
   id: idColumn(),
   projectId: text("project_id")
     .notNull()
@@ -30,7 +30,7 @@ export const quotations = sqliteTable("quotations", {
   ...timestamps(),
 });
 
-export const estimates = sqliteTable("estimates", {
+export const estimates = pgTable("estimates", {
   id: idColumn(),
   projectId: text("project_id")
     .notNull()
@@ -41,7 +41,7 @@ export const estimates = sqliteTable("estimates", {
   ...timestamps(),
 });
 
-export const boqs = sqliteTable("boqs", {
+export const boqs = pgTable("boqs", {
   id: idColumn(),
   projectId: text("project_id")
     .notNull()
@@ -51,7 +51,7 @@ export const boqs = sqliteTable("boqs", {
   ...timestamps(),
 });
 
-export const contracts = sqliteTable("contracts", {
+export const contracts = pgTable("contracts", {
   id: idColumn(),
   projectId: text("project_id")
     .notNull()
@@ -59,12 +59,12 @@ export const contracts = sqliteTable("contracts", {
   clientId: text("client_id").references(() => clients.id),
   title: text("title").notNull(),
   value: real("value"),
-  signedDate: integer("signed_date", { mode: "timestamp" }),
+  signedDate: timestamp("signed_date"),
   fileId: text("file_id").references(() => files.id),
   ...timestamps(),
 });
 
-export const invoices = sqliteTable("invoices", {
+export const invoices = pgTable("invoices", {
   id: idColumn(),
   projectId: text("project_id")
     .notNull()
@@ -72,7 +72,7 @@ export const invoices = sqliteTable("invoices", {
   clientId: text("client_id").references(() => clients.id),
   invoiceNumber: text("invoice_number").notNull(),
   amount: real("amount").notNull(),
-  dueDate: integer("due_date", { mode: "timestamp" }),
+  dueDate: timestamp("due_date"),
   status: text("status", { enum: ["draft", "sent", "partially_paid", "paid", "overdue"] })
     .notNull()
     .default("draft"),
@@ -80,32 +80,32 @@ export const invoices = sqliteTable("invoices", {
   ...timestamps(),
 });
 
-export const payments = sqliteTable("payments", {
+export const payments = pgTable("payments", {
   id: idColumn(),
   invoiceId: text("invoice_id")
     .notNull()
     .references(() => invoices.id),
   amount: real("amount").notNull(),
-  paidAt: integer("paid_at", { mode: "timestamp" }).notNull(),
+  paidAt: timestamp("paid_at").notNull(),
   method: text("method"),
   reference: text("reference"),
   ...createdAtOnly(),
 });
 
-export const expenses = sqliteTable("expenses", {
+export const expenses = pgTable("expenses", {
   id: idColumn(),
   projectId: text("project_id").references(() => projects.id),
   siteId: text("site_id").references(() => sites.id),
   category: text("category"),
   amount: real("amount").notNull(),
-  incurredAt: integer("incurred_at", { mode: "timestamp" }).notNull(),
+  incurredAt: timestamp("incurred_at").notNull(),
   note: text("note"),
   receiptFileId: text("receipt_file_id").references(() => files.id),
   createdBy: text("created_by").references(() => users.id),
   ...createdAtOnly(),
 });
 
-export const vendors = sqliteTable("vendors", {
+export const vendors = pgTable("vendors", {
   id: idColumn(),
   name: text("name").notNull(),
   category: text("category"),

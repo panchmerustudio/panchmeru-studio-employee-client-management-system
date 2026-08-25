@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { idColumn, timestamps, createdAtOnly } from "./common";
 import { employees } from "./employees";
 import { users } from "./identity";
@@ -6,7 +6,7 @@ import { projects } from "./projects";
 import { sites } from "./sites";
 import { files } from "./files";
 
-export const tasks = sqliteTable("tasks", {
+export const tasks = pgTable("tasks", {
   id: idColumn(),
   title: text("title").notNull(),
   description: text("description"),
@@ -21,7 +21,7 @@ export const tasks = sqliteTable("tasks", {
   priority: text("priority", { enum: ["low", "normal", "high", "urgent"] })
     .notNull()
     .default("normal"),
-  dueDate: integer("due_date", { mode: "timestamp" }),
+  dueDate: timestamp("due_date"),
   instructions: text("instructions"),
   status: text("status", {
     enum: [
@@ -43,7 +43,7 @@ export const tasks = sqliteTable("tasks", {
   ...timestamps(),
 });
 
-export const taskAttachments = sqliteTable("task_attachments", {
+export const taskAttachments = pgTable("task_attachments", {
   id: idColumn(),
   taskId: text("task_id")
     .notNull()
@@ -58,7 +58,7 @@ export const taskAttachments = sqliteTable("task_attachments", {
 });
 
 /** The task's work conversation: text / voice / photo / document, in order. */
-export const taskComments = sqliteTable("task_comments", {
+export const taskComments = pgTable("task_comments", {
   id: idColumn(),
   taskId: text("task_id")
     .notNull()
@@ -78,7 +78,7 @@ export const taskComments = sqliteTable("task_comments", {
  * nothing is overwritten, so the manager (and later, an auditor) can see
  * every previous submission and every review decision.
  */
-export const taskSubmissions = sqliteTable("task_submissions", {
+export const taskSubmissions = pgTable("task_submissions", {
   id: idColumn(),
   taskId: text("task_id")
     .notNull()
@@ -88,7 +88,7 @@ export const taskSubmissions = sqliteTable("task_submissions", {
     .references(() => employees.id),
   version: integer("version").notNull().default(1),
   note: text("note"),
-  submittedAt: integer("submitted_at", { mode: "timestamp" })
+  submittedAt: timestamp("submitted_at")
     .notNull()
     .$defaultFn(() => new Date()),
   status: text("status", {
@@ -97,12 +97,12 @@ export const taskSubmissions = sqliteTable("task_submissions", {
     .notNull()
     .default("pending_review"),
   reviewedBy: text("reviewed_by").references(() => users.id),
-  reviewedAt: integer("reviewed_at", { mode: "timestamp" }),
+  reviewedAt: timestamp("reviewed_at"),
   reviewNote: text("review_note"),
   reviewVoiceNoteId: text("review_voice_note_id"),
 });
 
-export const taskSubmissionAttachments = sqliteTable("task_submission_attachments", {
+export const taskSubmissionAttachments = pgTable("task_submission_attachments", {
   id: idColumn(),
   submissionId: text("submission_id")
     .notNull()
@@ -113,7 +113,7 @@ export const taskSubmissionAttachments = sqliteTable("task_submission_attachment
 });
 
 /** Status-change ledger, independent of comments — powers the task history view + audit. */
-export const taskHistory = sqliteTable("task_history", {
+export const taskHistory = pgTable("task_history", {
   id: idColumn(),
   taskId: text("task_id")
     .notNull()

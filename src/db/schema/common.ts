@@ -1,18 +1,12 @@
 import { randomUUID } from "crypto";
-import { integer, text } from "drizzle-orm/sqlite-core";
+import { text, timestamp } from "drizzle-orm/pg-core";
 
 /**
- * Shared column helpers.
- *
- * PORTABILITY NOTE: this project runs on SQLite for zero-config local dev.
- * To move to PostgreSQL (e.g. a free Supabase/Neon project) for production:
- *   - swap `drizzle-orm/sqlite-core` imports for `drizzle-orm/pg-core`
- *   - `text('id')` -> `uuid('id')` (or keep text, both work)
- *   - `integer({ mode: 'timestamp' })` -> `timestamp()`
- *   - `integer({ mode: 'boolean' })` -> `boolean()`
- *   - `text({ mode: 'json' })` -> `jsonb()`
- * The schema is intentionally written in a dialect-light style to make that
- * migration mechanical. See README.md "Moving to Postgres for production".
+ * Shared column helpers — PostgreSQL dialect (production). This project
+ * started on SQLite for zero-config local dev and was migrated to Postgres
+ * for the live deployment; see README.md "Moving to Postgres for production"
+ * for the history. Local dev now points at the same (or a separate) Postgres
+ * database via DATABASE_URL — see src/db/client.ts.
  */
 
 export function idColumn() {
@@ -23,10 +17,10 @@ export function idColumn() {
 
 export function timestamps() {
   return {
-    createdAt: integer("created_at", { mode: "timestamp" })
+    createdAt: timestamp("created_at")
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer("updated_at", { mode: "timestamp" })
+    updatedAt: timestamp("updated_at")
       .notNull()
       .$defaultFn(() => new Date())
       .$onUpdateFn(() => new Date()),
@@ -35,7 +29,7 @@ export function timestamps() {
 
 export function createdAtOnly() {
   return {
-    createdAt: integer("created_at", { mode: "timestamp" })
+    createdAt: timestamp("created_at")
       .notNull()
       .$defaultFn(() => new Date()),
   };

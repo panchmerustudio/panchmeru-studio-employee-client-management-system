@@ -1,19 +1,19 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { boolean, integer, pgTable, real, text, timestamp } from "drizzle-orm/pg-core";
 import { idColumn, createdAtOnly } from "./common";
 import { employees } from "./employees";
 import { users } from "./identity";
 import { files } from "./files";
 
-export const leaveTypes = sqliteTable("leave_types", {
+export const leaveTypes = pgTable("leave_types", {
   id: idColumn(),
   key: text("key").notNull().unique(), // "sick", "annual", ...
   name: text("name").notNull(),
-  paid: integer("paid", { mode: "boolean" }).notNull().default(true),
+  paid: boolean("paid").notNull().default(true),
   maxDaysPerYear: integer("max_days_per_year"), // studio policy: sick = 8/yr, annual = 15/yr
-  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  active: boolean("active").notNull().default(true),
 });
 
-export const leaveRequests = sqliteTable("leave_requests", {
+export const leaveRequests = pgTable("leave_requests", {
   id: idColumn(),
   employeeId: text("employee_id")
     .notNull()
@@ -21,16 +21,16 @@ export const leaveRequests = sqliteTable("leave_requests", {
   leaveTypeId: text("leave_type_id")
     .notNull()
     .references(() => leaveTypes.id),
-  startDate: integer("start_date", { mode: "timestamp" }).notNull(),
-  endDate: integer("end_date", { mode: "timestamp" }).notNull(),
-  isHalfDay: integer("is_half_day", { mode: "boolean" }).notNull().default(false),
+  startDate: timestamp("start_date").notNull(),
+  endDate: timestamp("end_date").notNull(),
+  isHalfDay: boolean("is_half_day").notNull().default(false),
   reason: text("reason").notNull(),
   attachmentFileId: text("attachment_file_id").references(() => files.id),
   status: text("status", { enum: ["pending", "approved", "rejected", "cancelled"] })
     .notNull()
     .default("pending"),
   reviewedBy: text("reviewed_by").references(() => users.id),
-  reviewedAt: integer("reviewed_at", { mode: "timestamp" }),
+  reviewedAt: timestamp("reviewed_at"),
   reviewComment: text("review_comment"),
 
   // Days requested, counted at apply time (half day = 0.5). paidDays/unpaidDays/

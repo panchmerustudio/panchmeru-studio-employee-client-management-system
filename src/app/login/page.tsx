@@ -140,9 +140,11 @@ export default function LoginPage() {
           )}
         </div>
 
-        <p className="mt-6 text-center text-xs text-muted">
-          Demo password for all seed accounts: <span className="font-mono">Panchmeru@123</span>
-        </p>
+        {process.env.NODE_ENV !== "production" && (
+          <p className="mt-6 text-center text-xs text-muted">
+            Demo password for all seed accounts: <span className="font-mono">Panchmeru@123</span>
+          </p>
+        )}
       </div>
     </div>
   );

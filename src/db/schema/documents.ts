@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, pgTable, text } from "drizzle-orm/pg-core";
 import { idColumn, timestamps, createdAtOnly } from "./common";
 import { users } from "./identity";
 import { projects } from "./projects";
@@ -12,13 +12,13 @@ import { files } from "./files";
  * control, status and (later) client-share history actually live.
  * Versions are NEVER overwritten or deleted — see section 15.
  */
-export const documentCategories = sqliteTable("document_categories", {
+export const documentCategories = pgTable("document_categories", {
   id: idColumn(),
   key: text("key").notNull().unique(), // architecture / interior / working_drawing / 3d / site / photos / other
   name: text("name").notNull(),
 });
 
-export const documents = sqliteTable("documents", {
+export const documents = pgTable("documents", {
   id: idColumn(),
   name: text("name").notNull(),
   categoryId: text("category_id").references(() => documentCategories.id),
@@ -32,7 +32,7 @@ export const documents = sqliteTable("documents", {
   ...timestamps(),
 });
 
-export const documentVersions = sqliteTable("document_versions", {
+export const documentVersions = pgTable("document_versions", {
   id: idColumn(),
   documentId: text("document_id")
     .notNull()
