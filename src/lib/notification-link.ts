@@ -13,6 +13,8 @@ export function notificationHref(relatedEntityType: string | null, relatedEntity
       return `/chat/${relatedEntityId}`;
     case "storage":
       return "/settings/storage";
+    case "job_application":
+      return `/recruitment/${relatedEntityId}`;
     default:
       return null;
   }

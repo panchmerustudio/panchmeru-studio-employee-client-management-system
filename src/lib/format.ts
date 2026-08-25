@@ -57,6 +57,11 @@ const STATUS_STYLES: Record<string, string> = {
   rejected: "bg-red-100 text-red-700",
   ordered: "bg-blue-100 text-blue-700",
   received: "bg-emerald-100 text-emerald-700",
+  // job applications
+  new: "bg-blue-100 text-blue-700",
+  reviewing: "bg-amber-100 text-amber-700",
+  shortlisted: "bg-purple-100 text-purple-700",
+  hired: "bg-emerald-100 text-emerald-700",
   // site health
   normal: "bg-emerald-100 text-emerald-700",
   attention: "bg-amber-100 text-amber-700",

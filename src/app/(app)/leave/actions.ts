@@ -115,6 +115,10 @@ export async function decideLeave(leaveId: string, decision: "approved" | "rejec
   const actor = await requirePermission(PERMISSIONS.LEAVE_APPROVE);
   const before = await db.query.leaveRequests.findFirst({ where: eq(leaveRequests.id, leaveId) });
   if (!before) throw new Error("Leave request not found.");
+  // Guards against two managers acting on the same request at once (e.g. both open it from a
+  // notification) — whoever's decision lands first wins, the second gets a clear error instead of
+  // silently double-processing the paid/unpaid split and deduction below.
+  if (before.status !== "pending") throw new Error(`This request was already ${before.status} — nothing to do.`);
 
   const employee = await db.query.employees.findFirst({ where: eq(employees.id, before.employeeId) });
 

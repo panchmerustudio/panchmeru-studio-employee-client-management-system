@@ -30,6 +30,7 @@ export const PERMISSIONS = {
   AUDIT_VIEW: "audit.view",
   SETTINGS_MANAGE: "settings.manage",
   DASHBOARD_OWNER: "dashboard.owner",
+  RECRUITMENT_MANAGE: "recruitment.manage",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -55,6 +56,7 @@ export const ALL_PERMISSIONS: { key: PermissionKey; description: string }[] = [
   { key: PERMISSIONS.AUDIT_VIEW, description: "View the audit log" },
   { key: PERMISSIONS.SETTINGS_MANAGE, description: "Manage feature flags & studio settings" },
   { key: PERMISSIONS.DASHBOARD_OWNER, description: "View the owner operations dashboard" },
+  { key: PERMISSIONS.RECRUITMENT_MANAGE, description: "Review job applications submitted through the public careers page" },
 ];
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {

@@ -74,7 +74,8 @@ export async function saveFile(opts: {
   mimeType: string;
   kind: "photo" | "document" | "voice" | "drawing" | "other";
   visibility?: "internal" | "project_team" | "client_visible" | "approved";
-  uploadedBy: string;
+  // Optional: unset for anonymous uploads (the public /apply page has no signed-in user to attribute a resume to).
+  uploadedBy?: string;
   relatedEntityType?: string;
   relatedEntityId?: string;
 }) {

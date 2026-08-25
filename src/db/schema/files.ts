@@ -30,9 +30,10 @@ export const files = pgTable("files", {
   // for cases that just need "a file attached to X".
   relatedEntityType: text("related_entity_type"),
   relatedEntityId: text("related_entity_id"),
-  uploadedBy: text("uploaded_by")
-    .notNull()
-    .references(() => users.id),
+  // Nullable: files uploaded anonymously through the public /apply job
+  // application page (see recruitment.ts) have no signed-in `users` row
+  // to attribute them to.
+  uploadedBy: text("uploaded_by").references(() => users.id),
   ...createdAtOnly(),
 });
 
