@@ -12,6 +12,11 @@ import { seedDatabase } from "@/db/seed";
  * never be called again). seedDatabase() itself is also idempotent: if
  * roles already exist, it no-ops instead of inserting duplicate data.
  */
+// Vercel's default function timeout (10s on Hobby) is too short for this
+// script's ~150 sequential inserts against a pooled connection; 60s is the
+// max Hobby allows and gives it real room to finish in one invocation.
+export const maxDuration = 60;
+
 async function handle(req: NextRequest) {
   const secret = process.env.SETUP_SECRET;
   if (!secret) {
