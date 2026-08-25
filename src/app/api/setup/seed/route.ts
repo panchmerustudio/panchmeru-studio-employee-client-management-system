@@ -12,7 +12,7 @@ import { seedDatabase } from "@/db/seed";
  * never be called again). seedDatabase() itself is also idempotent: if
  * roles already exist, it no-ops instead of inserting duplicate data.
  */
-export async function POST(req: NextRequest) {
+async function handle(req: NextRequest) {
   const secret = process.env.SETUP_SECRET;
   if (!secret) {
     return NextResponse.json({ error: "SETUP_SECRET is not configured — seeding is disabled." }, { status: 403 });
@@ -29,4 +29,15 @@ export async function POST(req: NextRequest) {
     console.error("Seeding failed:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
+}
+
+export async function POST(req: NextRequest) {
+  return handle(req);
+}
+
+// GET is also accepted (in addition to POST) purely so this one-time,
+// secret-gated setup step can be triggered with a plain URL visit —
+// convenient for running it right after deploy without extra tooling.
+export async function GET(req: NextRequest) {
+  return handle(req);
 }
