@@ -12,10 +12,10 @@
     "db:reset": "npm run db:push && npm run db:seed"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1117.0",
     "@simplewebauthn/browser": "^9.0.1",
     "@simplewebauthn/server": "^9.0.3",
     "@turf/turf": "^7.4.0",
-    "@vercel/blob": "^2.8.0",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",

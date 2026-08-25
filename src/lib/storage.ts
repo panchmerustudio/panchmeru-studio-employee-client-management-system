@@ -1,14 +1,16 @@
 import "server-only";
-import { put, del } from "@vercel/blob";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { randomUUID } from "crypto";
 import { db } from "@/db/client";
 import { files as filesTable } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 /**
- * Object storage seam (spec section 54). Backed by Vercel Blob — needs the
- * project's Blob store connected in Vercel (Storage tab -> Create Database
- * -> Blob -> Connect to Project), which auto-sets BLOB_READ_WRITE_TOKEN.
+ * Object storage seam (spec section 54). Backed by Cloudflare R2 (S3-
+ * compatible, and the only one of the free options with no bandwidth cap —
+ * see README) via four env vars: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+ * R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME.
+ *
  * This used to write to local disk under /uploads, which worked in dev but
  * silently failed on Vercel (its filesystem is read-only at runtime except
  * /tmp, and /tmp doesn't survive between requests) — that was the actual
@@ -17,13 +19,20 @@ import { eq } from "drizzle-orm";
  * and every read through `readStoredFile` / `/api/files/[id]`, so this is
  * the only file that needed to change.
  *
- * Blobs are stored with `access: "public"` (Vercel Blob's only mode today)
- * under an unguessable random pathname — but that pathname is never sent
- * to the browser. The client only ever calls `/api/files/[id]`, which
- * checks the caller is signed in, then fetches the blob server-side and
- * streams it back — the same privacy boundary the local-disk version had.
+ * The R2 bucket is never made public — every read goes through
+ * `readStoredFile`, called only from `/api/files/[id]`, which checks the
+ * caller is signed in before streaming the object back. The object key
+ * (storageKey) is never sent to the browser.
  */
-const BLOB_PREFIX = "panchmeru";
+const r2 = new S3Client({
+  region: "auto",
+  endpoint: process.env.R2_ACCOUNT_ID ? `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : undefined,
+  credentials: {
+    accessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
+  },
+});
+const BUCKET = process.env.R2_BUCKET_NAME ?? "";
 
 export const ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
@@ -80,18 +89,21 @@ export async function saveFile(opts: {
   }
 
   const day = new Date().toISOString().slice(0, 10);
-  const key = `${BLOB_PREFIX}/${day}/${randomUUID()}-${sanitizeFilename(opts.originalName)}`;
-  const blob = await put(key, opts.buffer, {
-    access: "public",
-    contentType: opts.mimeType,
-    addRandomSuffix: false,
-  });
+  const key = `${day}/${randomUUID()}-${sanitizeFilename(opts.originalName)}`;
+  await r2.send(
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      Body: opts.buffer,
+      ContentType: opts.mimeType,
+    })
+  );
 
   const [row] = await db
     .insert(filesTable)
     .values({
       originalName: opts.originalName,
-      storageKey: blob.url,
+      storageKey: key,
       mimeType: opts.mimeType,
       sizeBytes: opts.buffer.byteLength,
       kind: opts.kind,
@@ -105,13 +117,14 @@ export async function saveFile(opts: {
 }
 
 export async function readStoredFile(storageKey: string) {
-  const res = await fetch(storageKey);
-  if (!res.ok) throw new Error(`Could not read stored file (${res.status}).`);
-  return Buffer.from(await res.arrayBuffer());
+  const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: storageKey }));
+  const bytes = await res.Body?.transformToByteArray();
+  if (!bytes) throw new Error("Could not read stored file.");
+  return Buffer.from(bytes);
 }
 
 export async function deleteStoredFile(storageKey: string) {
-  await del(storageKey);
+  await r2.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: storageKey }));
 }
 
 export async function getFileById(id: string) {

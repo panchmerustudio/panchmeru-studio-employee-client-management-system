@@ -150,14 +150,15 @@ to Postgres so local dev and production share one code path and one set of migra
    the Postgres connection string, and set `WEBAUTHN_RP_ID` / `WEBAUTHN_ORIGIN` to your real domain
    (e.g. `panchmeru.vercel.app` and `https://panchmeru.vercel.app`) — WebAuthn is origin-locked and
    won't work if these are left as `localhost` in production.
-4. **Known gap before going fully live:** file uploads (employee documents, task photos, drawings,
-   check-in selfies) currently save to local disk under `/uploads`, served only through
-   `/api/files/[id]` (never a public path). Vercel's filesystem is not persistent between requests,
-   so uploads will not survive there yet. `src/lib/storage.ts`'s `saveFile`/`readStoredFile` are the
-   one deliberate swap point for S3-compatible storage (Supabase Storage's free tier, Cloudflare R2,
-   or Vercel Blob) — every caller already goes through those two functions, so this is a contained
-   follow-up, not a redesign. Everything that doesn't touch file uploads (employees, attendance,
-   leave/payroll, tasks, projects, sites, materials) works fully on Vercel + Postgres today.
+4. **File storage is Cloudflare R2** (`src/lib/storage.ts`, via the S3-compatible API): chosen over
+   Vercel Blob and Supabase Storage because it has the largest free tier (10GB) and never charges for
+   downloads, even past that. Create a bucket in the Cloudflare dashboard (R2 Object Storage → Create
+   bucket) and an API token scoped to it (R2 → Manage API tokens → Object Read & Write), then set four
+   env vars in Vercel: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`.
+   The bucket stays private — every read goes through `/api/files/[id]`, which checks the caller is
+   signed in before streaming the object back, so nothing is ever served from a public bucket URL.
+   (Local dev without these env vars will fail on first upload attempt, not at build time — see the
+   comment at the top of `storage.ts`.)
 
 ## Installing as an app today, wrapping natively later
 
@@ -212,8 +213,6 @@ Run either the same way as `e2e-check.mjs` above.
   the automated Playwright script** — both need a real browser/device with an actual authenticator
   or microphone, which a headless CI browser doesn't have. The rest of the acceptance flow (auth,
   GPS attendance, tasks, leave, site visits, approvals) is covered by `e2e-check.mjs` end to end.
-- **Local file storage** (see "Deploying" above) needs to move to S3-compatible storage before a real
-  production deploy, since it currently writes to local disk.
 - **Reverse-geocoded addresses on check-in/out are best-effort.** They use the free OpenStreetMap
   Nominatim API from the employee's browser — if that lookup is slow, rate-limited, or the network
   blocks it (as this development sandbox's does), the address is simply left blank and the record
