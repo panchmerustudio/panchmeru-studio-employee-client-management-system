@@ -35,8 +35,17 @@ import { ALL_PERMISSIONS, DEFAULT_ROLE_PERMISSIONS, ROLE_KEYS, ROLE_LABELS } fro
 import { FEATURE_FLAG_DEFS } from "../lib/feature-flags";
 import { randomUUID } from "crypto";
 
-async function main() {
+export async function seedDatabase(): Promise<{ skipped: boolean }> {
   console.log("Seeding Panchmeru Studio...");
+
+  // Safe to call more than once (e.g. via the one-time /api/setup/seed
+  // route) — if roles already exist, the database has already been
+  // seeded, so bail out instead of inserting duplicate demo data.
+  const existingRole = await db.query.roles.findFirst();
+  if (existingRole) {
+    console.log("Already seeded — skipping.");
+    return { skipped: true };
+  }
 
   // ---- Roles & permissions ----
   const roleRows: Record<string, string> = {};
@@ -369,11 +378,6 @@ async function main() {
   console.log("  Manager:    manager@panchmeru.studio");
   console.log("  Supervisor: supervisor@panchmeru.studio");
   console.log("  Employee:   ankit@panchmeru.studio / priya@panchmeru.studio / deepak@panchmeru.studio");
-}
 
-main()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+  return { skipped: false };
+}
