@@ -8,6 +8,7 @@ import { PageHeader, SectionCard, Badge, EmptyState } from "@/components/ui";
 import { formatDate } from "@/lib/format";
 import { ApplyLeaveForm } from "./apply-form";
 import { ApprovalRow } from "./approval-row";
+import { CancelRequestButton } from "./cancel-request-button";
 import { getAllBalances, computeApprovalSplit, dailyRate } from "@/lib/leave-policy";
 
 export default async function LeavePage() {
@@ -113,6 +114,7 @@ export default async function LeavePage() {
                       {r.deductionAmount ? ` · ₹${r.deductionAmount.toLocaleString("en-IN")} deducted` : ""}
                     </div>
                   )}
+                  {r.status === "pending" && <CancelRequestButton leaveId={r.id} />}
                 </li>
               ))}
             </ul>

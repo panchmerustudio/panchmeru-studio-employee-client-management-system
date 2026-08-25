@@ -2,11 +2,12 @@
 
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { db } from "@/db/client";
 import { leaveRequests, employees, users, roles, attendanceRecords, notifications } from "@/db/schema";
 import { requireUser, requirePermission } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
+import { formatDate } from "@/lib/format";
 import { PERMISSIONS } from "@/lib/rbac";
 import { saveFile } from "@/lib/storage";
 import { countLeaveDays, computeApprovalSplit, dailyRate } from "@/lib/leave-policy";
@@ -32,6 +33,23 @@ export async function applyLeave(_prev: FormState, formData: FormData): Promise<
 
   if (new Date(data.endDate) < new Date(data.startDate)) {
     return { error: "End date can't be before the start date." };
+  }
+
+  // No duplicate leave in the same timeframe: block if this employee already
+  // has a pending or approved request whose date range overlaps this one.
+  // (Rejected/cancelled requests don't block — those dates are free again.)
+  const overlapping = await db.query.leaveRequests.findFirst({
+    where: and(
+      eq(leaveRequests.employeeId, actor.employeeId),
+      inArray(leaveRequests.status, ["pending", "approved"]),
+      lte(leaveRequests.startDate, new Date(data.endDate)),
+      gte(leaveRequests.endDate, new Date(data.startDate))
+    ),
+  });
+  if (overlapping) {
+    return {
+      error: `You already have a ${overlapping.status} leave request covering ${formatDate(overlapping.startDate)}–${formatDate(overlapping.endDate)}. Cancel that one first if you need to change it.`,
+    };
   }
 
   let attachmentFileId: string | undefined;
@@ -78,6 +96,19 @@ export async function applyLeave(_prev: FormState, formData: FormData): Promise<
   await recordAudit({ actor, action: "leave.applied", entityType: "leave_request", entityId: request.id, newState: data });
   revalidatePath("/leave");
   return { ok: true };
+}
+
+/** Lets an employee cancel their own still-pending request — the fix for the duplicate-timeframe block above when they applied with the wrong dates. */
+export async function cancelLeaveRequest(leaveId: string) {
+  const actor = await requireUser();
+  const request = await db.query.leaveRequests.findFirst({ where: eq(leaveRequests.id, leaveId) });
+  if (!request) throw new Error("Leave request not found.");
+  if (request.employeeId !== actor.employeeId) throw new Error("You can only cancel your own leave requests.");
+  if (request.status !== "pending") throw new Error("Only a pending request can be cancelled — this one has already been reviewed.");
+
+  await db.update(leaveRequests).set({ status: "cancelled" }).where(eq(leaveRequests.id, leaveId));
+  await recordAudit({ actor, action: "leave.cancelled", entityType: "leave_request", entityId: leaveId });
+  revalidatePath("/leave");
 }
 
 export async function decideLeave(leaveId: string, decision: "approved" | "rejected", comment: string) {

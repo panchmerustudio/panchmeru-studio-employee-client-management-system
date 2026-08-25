@@ -2,14 +2,30 @@
 
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { tasks, taskComments, taskHistory, taskSubmissions, taskSubmissionAttachments, employees, users, notifications } from "@/db/schema";
 import { requirePermission, requireUser } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
+import { statusLabel } from "@/lib/format";
 import { PERMISSIONS } from "@/lib/rbac";
 import { saveFile } from "@/lib/storage";
 import { saveVoiceNote } from "@/lib/voice";
+
+/** A task is still "open" if work on it hasn't finished or been called off — see the duplicate check in createTask. */
+const OPEN_TASK_STATUSES = ["to_do", "in_progress", "submitted", "modification_required"] as const;
+
+/**
+ * Lightweight self-service progress moves the board (section below) lets an
+ * assignee make without going through the structured submit/review flows —
+ * e.g. dragging a card from "To Do" to "In Progress" is just a status flip,
+ * not a review decision, so it doesn't need SubmitWorkPanel's note/files.
+ * Keyed by target status -> the statuses it's valid to come from.
+ */
+const ASSIGNEE_PROGRESS_MOVES: Record<string, string[]> = {
+  in_progress: ["to_do", "modification_required"],
+  to_do: ["in_progress"],
+};
 
 const createTaskSchema = z.object({
   title: z.string().min(2, "Give the task a title."),
@@ -32,6 +48,25 @@ export async function createTask(_prev: FormState, formData: FormData): Promise<
   const parsed = createTaskSchema.safeParse(raw);
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
   const data = parsed.data;
+
+  // No duplicate task: block if the same person already has an open task
+  // with this exact title on the same project/site. Doesn't look at
+  // approved/cancelled/rescheduled tasks — a same-titled recurring task
+  // (e.g. "Site visit report") is fine once the last one is actually done.
+  const duplicateTask = await db.query.tasks.findFirst({
+    where: and(
+      eq(tasks.assignedToId, data.assignedToId),
+      inArray(tasks.status, OPEN_TASK_STATUSES),
+      sql`lower(${tasks.title}) = lower(${data.title})`,
+      data.projectId ? eq(tasks.projectId, data.projectId) : isNull(tasks.projectId),
+      data.siteId ? eq(tasks.siteId, data.siteId) : isNull(tasks.siteId)
+    ),
+  });
+  if (duplicateTask) {
+    return {
+      error: `This person already has an open task titled "${data.title}" on the same project/site (status: ${statusLabel(duplicateTask.status)}). Update that task instead of creating a duplicate.`,
+    };
+  }
 
   const [task] = await db
     .insert(tasks)
@@ -66,6 +101,34 @@ export async function createTask(_prev: FormState, formData: FormData): Promise<
   await recordAudit({ actor, action: "task.created", entityType: "task", entityId: task.id, newState: { title: data.title, assignedToId: data.assignedToId } });
   revalidatePath("/tasks");
   return { ok: true };
+}
+
+/**
+ * Powers the "To Do" <-> "In Progress" (and "Modification Required" ->
+ * "In Progress") moves on the task board — see ASSIGNEE_PROGRESS_MOVES
+ * above. Anything that needs a note/attachments or a review decision
+ * (submitting work, approving, requesting changes) still goes through
+ * submitTask/reviewTask, which the board opens a small modal for instead
+ * of moving instantly.
+ */
+export async function updateTaskProgress(taskId: string, target: "to_do" | "in_progress") {
+  const actor = await requireUser();
+  const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
+  if (!task) throw new Error("Task not found.");
+  if (actor.employeeId !== task.assignedToId) throw new Error("Only the person this task is assigned to can move it here.");
+
+  const allowedFrom = ASSIGNEE_PROGRESS_MOVES[target] ?? [];
+  if (!allowedFrom.includes(task.status)) {
+    throw new Error(`Can't move this task from "${statusLabel(task.status)}" to "${statusLabel(target)}".`);
+  }
+
+  await db.update(tasks).set({ status: target }).where(eq(tasks.id, taskId));
+  await db.insert(taskHistory).values({ taskId, action: "status_changed", fromStatus: task.status, toStatus: target, actorId: actor.id });
+  await recordAudit({ actor, action: "task.status_changed", entityType: "task", entityId: taskId, previousState: { status: task.status }, newState: { status: target } });
+
+  revalidatePath("/tasks");
+  revalidatePath("/tasks/board");
+  revalidatePath(`/tasks/${taskId}`);
 }
 
 export async function addTaskComment(taskId: string, formData: FormData) {

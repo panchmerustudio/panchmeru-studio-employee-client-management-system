@@ -46,11 +46,16 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
         title="Tasks"
         subtitle={`${filtered.length} task${filtered.length === 1 ? "" : "s"}`}
         action={
-          canCreate && (
-            <Link href="/tasks/new" className="btn btn-accent">
-              <Icon name="plus" className="h-4 w-4" /> New task
+          <div className="flex items-center gap-2">
+            <Link href="/tasks/board" className="btn btn-secondary">
+              <Icon name="grid" className="h-4 w-4" /> Board view
             </Link>
-          )
+            {canCreate && (
+              <Link href="/tasks/new" className="btn btn-accent">
+                <Icon name="plus" className="h-4 w-4" /> New task
+              </Link>
+            )}
+          </div>
         }
       />
 
