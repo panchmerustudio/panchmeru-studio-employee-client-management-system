@@ -180,6 +180,19 @@ embeds this web app in a native shell with access to native GPS/camera/biometric
 APIs used here (`navigator.geolocation`, WebAuthn, MediaRecorder) don't already cover it. No
 rewrite — the web app is the source of truth either way.
 
+**Planned for that native step: make chat real-time, WhatsApp-style.** Today's chat
+(`src/app/(app)/chat/`) stores messages in Postgres and attachments in R2, refreshed on page load —
+simple and reliable, but not live, and messages persist until someone deletes them (see "Let chat
+messages be deleted" — deletion is manual, your choice, not automatic). When this gets wrapped
+natively, revisit chat to add: a real-time transport (Supabase Realtime is the natural fit, since
+the DB is already on Supabase — no new hosting needed) so messages arrive live instead of on
+refresh, and native push notifications via Capacitor for messages received while the app is in the
+background/closed (the web app today can only notify while it's open). True "no server storage"
+delivery (hold a message only until the recipient's device has received it, then delete) was
+considered and intentionally not built now — it risks silently losing a message for anyone who
+isn't online at the moment it's sent — but is worth reconsidering once native push means "online"
+is closer to "app installed" than "browser tab open."
+
 ## Automated verification
 
 `e2e-check.mjs` is a scripted Playwright walkthrough of the real acceptance flow: owner logs in,
