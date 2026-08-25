@@ -159,6 +159,13 @@ to Postgres so local dev and production share one code path and one set of migra
    signed in before streaming the object back, so nothing is ever served from a public bucket URL.
    (Local dev without these env vars will fail on first upload attempt, not at build time — see the
    comment at the top of `storage.ts`.)
+5. **Storage tracking is built in** (`src/lib/storage-usage.ts`, `Settings → Storage` in the app):
+   usage is summed from the app's own `files` table (not a separate R2 billing API call), shown
+   against a configurable plan-size cap (defaults to R2's free 10GB), and owners/managers get an
+   in-app notification at 80/90/100% used — checked reactively whenever the owner dashboard or
+   Settings → Storage is opened, no Vercel Cron required. The same page lists the oldest files with a
+   delete button; Postgres's own foreign-key constraints block deleting anything still attached to a
+   task, message, or document, so this can't be used to break a live reference.
 
 ## Installing as an app today, wrapping natively later
 
