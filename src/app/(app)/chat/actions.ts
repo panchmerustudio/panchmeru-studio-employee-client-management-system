@@ -3,9 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/db/client";
-import { chatParticipants, chatMessages, notifications } from "@/db/schema";
-import { requireUser } from "@/lib/auth";
-import { saveFile } from "@/lib/storage";
+import { chatParticipants, chatMessages, files as filesTable, notifications, voiceNotes } from "@/db/schema";
+import { hasPermission, requireUser } from "@/lib/auth";
+import { recordAudit } from "@/lib/audit";
+import { PERMISSIONS } from "@/lib/rbac";
+import { deleteStoredFile, saveFile } from "@/lib/storage";
 import { saveVoiceNote } from "@/lib/voice";
 import { getOrCreateTeamConversation, getOrCreateDm } from "@/lib/chat";
 
@@ -87,6 +89,63 @@ export async function sendMessage(conversationId: string, formData: FormData) {
   }
 
   revalidatePath(`/chat/${conversationId}`);
+  revalidatePath("/chat");
+}
+
+/**
+ * Lets a message's sender (or an owner, for moderation) delete it and
+ * anything it carries — the user asked for messages to be "keep forever
+ * or delete, your choice" rather than everything being permanent by
+ * default. Same DB-first, R2-second order as file deletion elsewhere:
+ * the chat_messages row goes first (that's what frees the FK on
+ * chat_messages.fileId), then the file/voice-note rows, then the actual
+ * object in R2 — so nothing in R2 is ever removed while something still
+ * references it.
+ */
+export async function deleteMessage(messageId: string) {
+  const actor = await requireUser();
+
+  const message = await db.query.chatMessages.findFirst({ where: eq(chatMessages.id, messageId) });
+  if (!message) throw new Error("Message not found — it may already be deleted.");
+
+  const canDelete = message.senderId === actor.id || hasPermission(actor, PERMISSIONS.SETTINGS_MANAGE);
+  if (!canDelete) throw new Error("You can only delete your own messages.");
+
+  await db.delete(chatMessages).where(eq(chatMessages.id, messageId));
+
+  if (message.fileId) {
+    const file = await db.query.files.findFirst({ where: eq(filesTable.id, message.fileId) });
+    if (file) {
+      await db.delete(filesTable).where(eq(filesTable.id, file.id));
+      await deleteStoredFile(file.storageKey).catch((err) =>
+        console.error(`Failed to delete R2 object for chat file ${file.id} (storageKey: ${file.storageKey}):`, err)
+      );
+    }
+  }
+
+  if (message.voiceNoteId) {
+    const note = await db.query.voiceNotes.findFirst({ where: eq(voiceNotes.id, message.voiceNoteId) });
+    if (note) {
+      await db.delete(voiceNotes).where(eq(voiceNotes.id, note.id));
+      const file = await db.query.files.findFirst({ where: eq(filesTable.id, note.audioFileId) });
+      if (file) {
+        await db.delete(filesTable).where(eq(filesTable.id, file.id));
+        await deleteStoredFile(file.storageKey).catch((err) =>
+          console.error(`Failed to delete R2 object for voice note ${file.id} (storageKey: ${file.storageKey}):`, err)
+        );
+      }
+    }
+  }
+
+  await recordAudit({
+    actor,
+    action: "chat_message.deleted",
+    entityType: "chat_message",
+    entityId: messageId,
+    previousState: { conversationId: message.conversationId, type: message.type, senderId: message.senderId },
+  });
+
+  revalidatePath(`/chat/${message.conversationId}`);
   revalidatePath("/chat");
 }
 

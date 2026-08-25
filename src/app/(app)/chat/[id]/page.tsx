@@ -3,12 +3,14 @@ import { redirect, notFound } from "next/navigation";
 import { and, asc, eq, ne } from "drizzle-orm";
 import { db } from "@/db/client";
 import { chatConversations, chatParticipants, chatMessages, users, voiceNotes, files as filesTable } from "@/db/schema";
-import { requireUser } from "@/lib/auth";
+import { hasPermission, requireUser } from "@/lib/auth";
+import { PERMISSIONS } from "@/lib/rbac";
 import { PageHeader, SectionCard } from "@/components/ui";
 import { Icon } from "@/components/icon";
 import { timeAgo } from "@/lib/format";
 import { markConversationRead } from "../actions";
 import { ChatComposer } from "./composer";
+import { DeleteMessageButton } from "./delete-message-button";
 
 export default async function ChatThreadPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -24,6 +26,8 @@ export default async function ChatThreadPage({ params }: { params: Promise<{ id:
   if (!membership) notFound();
 
   await markConversationRead(id);
+
+  const canModerate = hasPermission(user, PERMISSIONS.SETTINGS_MANAGE);
 
   let title = convo.name ?? "Team";
   if (convo.type === "dm") {
@@ -64,7 +68,10 @@ export default async function ChatThreadPage({ params }: { params: Promise<{ id:
                 <div className={`max-w-[80%] flex-1 rounded-lg px-3 py-2 ${mine ? "bg-brand-ink text-white" : "bg-background"}`}>
                   <div className={`mb-0.5 flex items-center gap-2 ${mine ? "justify-end" : "justify-between"}`}>
                     {!mine && <span className="text-xs font-semibold">{authors[i]?.name}</span>}
-                    <span className={`text-[10px] ${mine ? "text-white/70" : "text-muted"}`}>{timeAgo(m.createdAt)}</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className={`text-[10px] ${mine ? "text-white/70" : "text-muted"}`}>{timeAgo(m.createdAt)}</span>
+                      {(mine || canModerate) && <DeleteMessageButton messageId={m.id} />}
+                    </span>
                   </div>
                   {m.type === "text" && <p className="text-sm">{m.text_}</p>}
                   {m.type === "photo" && msgFiles[i] && (
