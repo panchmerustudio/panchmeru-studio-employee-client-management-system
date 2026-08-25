@@ -11,6 +11,8 @@ export function notificationHref(relatedEntityType: string | null, relatedEntity
       return "/materials";
     case "chat_conversation":
       return `/chat/${relatedEntityId}`;
+    case "storage":
+      return "/settings/storage";
     default:
       return null;
   }

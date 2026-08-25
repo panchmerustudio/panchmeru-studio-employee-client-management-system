@@ -28,6 +28,8 @@ const PATHS: Record<string, string> = {
   x: "M18 6L6 18M6 6l12 12",
   ruler: "M2 12l10-10 10 10-10 10-10-10zM7 7l1.5 1.5M11 3l1.5 1.5M15 7l1.5 1.5",
   message: "M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z",
+  trash: "M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14zM10 11v6M14 11v6",
+  database: "M12 3C7.58 3 4 4.34 4 6s3.58 3 8 3 8-1.34 8-3-3.58-3-8-3zM4 6v6c0 1.66 3.58 3 8 3s8-1.34 8-3V6M4 12v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6",
 };
 
 export function Icon({ name, className = "h-5 w-5", strokeWidth = 2 }: { name: keyof typeof PATHS | string; className?: string; strokeWidth?: number }) {

@@ -1,3 +1,15 @@
+export function formatBytes(bytes: number) {
+  if (!bytes || bytes <= 0) return "0 MB";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
 export function formatDate(d: Date | string | null | undefined) {
   if (!d) return "—";
   const date = new Date(d);

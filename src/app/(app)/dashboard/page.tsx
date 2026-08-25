@@ -7,10 +7,17 @@ import { requirePermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/rbac";
 import { PageHeader, StatCard, SectionCard, Badge, EmptyState } from "@/components/ui";
 import { formatDate } from "@/lib/format";
+import { checkStorageThresholdAndNotify } from "@/lib/storage-usage";
 
 export default async function DashboardPage() {
   const user = await requirePermission(PERMISSIONS.DASHBOARD_OWNER).catch(() => null);
   if (!user) redirect("/home");
+
+  // Reactive storage check (no Vercel Cron needed) — piggybacks on the
+  // owner opening their dashboard so a threshold crossing gets noticed
+  // and notified without anyone visiting Settings → Storage directly.
+  // Never let this block or break the dashboard.
+  checkStorageThresholdAndNotify().catch((err) => console.error("Storage threshold check failed:", err));
 
   const today = new Date().toISOString().slice(0, 10);
   const startOfToday = new Date();
