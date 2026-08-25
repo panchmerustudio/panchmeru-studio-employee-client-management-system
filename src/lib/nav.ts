@@ -25,6 +25,7 @@ export function primaryNavFor(role: RoleKey): NavItem[] {
 /** Everything else, reachable from "More" (mobile) or the sidebar (wide screens). */
 export function secondaryNavFor(role: RoleKey): NavItem[] {
   const common: NavItem[] = [
+    { href: "/chat", label: "Chat", icon: "message" },
     { href: "/leave", label: "Leave", icon: "calendar" },
     { href: "/documents", label: "Documents", icon: "file" },
     { href: "/materials", label: "Materials", icon: "package" },

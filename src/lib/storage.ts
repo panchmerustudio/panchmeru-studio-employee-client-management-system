@@ -1,21 +1,29 @@
 import "server-only";
-import { writeFile, mkdir, readFile } from "fs/promises";
-import path from "path";
+import { put, del } from "@vercel/blob";
 import { randomUUID } from "crypto";
 import { db } from "@/db/client";
 import { files as filesTable } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 /**
- * Object storage seam (spec section 54). Local disk today, one function
- * to swap for production:
- *   - Supabase Storage (free tier, S3-compatible) or Cloudflare R2 (free
- *     tier) both work with the same interface — replace the body of
- *     `saveFile`/`readStoredFile` with their SDK calls and keep the
- *     `files` table exactly as is. Nothing else in the app touches disk
- *     paths directly; every read goes through `getSignedFileUrl`.
+ * Object storage seam (spec section 54). Backed by Vercel Blob — needs the
+ * project's Blob store connected in Vercel (Storage tab -> Create Database
+ * -> Blob -> Connect to Project), which auto-sets BLOB_READ_WRITE_TOKEN.
+ * This used to write to local disk under /uploads, which worked in dev but
+ * silently failed on Vercel (its filesystem is read-only at runtime except
+ * /tmp, and /tmp doesn't survive between requests) — that was the actual
+ * cause of "upload/voice note doesn't work" once deployed. Nothing else in
+ * the app touches storage directly; every write goes through `saveFile`
+ * and every read through `readStoredFile` / `/api/files/[id]`, so this is
+ * the only file that needed to change.
+ *
+ * Blobs are stored with `access: "public"` (Vercel Blob's only mode today)
+ * under an unguessable random pathname — but that pathname is never sent
+ * to the browser. The client only ever calls `/api/files/[id]`, which
+ * checks the caller is signed in, then fetches the blob server-side and
+ * streams it back — the same privacy boundary the local-disk version had.
  */
-const UPLOAD_ROOT = path.join(process.cwd(), "uploads");
+const BLOB_PREFIX = "panchmeru";
 
 export const ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
@@ -72,16 +80,18 @@ export async function saveFile(opts: {
   }
 
   const day = new Date().toISOString().slice(0, 10);
-  const key = `${day}/${randomUUID()}-${sanitizeFilename(opts.originalName)}`;
-  const fullPath = path.join(UPLOAD_ROOT, key);
-  await mkdir(path.dirname(fullPath), { recursive: true });
-  await writeFile(fullPath, opts.buffer);
+  const key = `${BLOB_PREFIX}/${day}/${randomUUID()}-${sanitizeFilename(opts.originalName)}`;
+  const blob = await put(key, opts.buffer, {
+    access: "public",
+    contentType: opts.mimeType,
+    addRandomSuffix: false,
+  });
 
   const [row] = await db
     .insert(filesTable)
     .values({
       originalName: opts.originalName,
-      storageKey: key,
+      storageKey: blob.url,
       mimeType: opts.mimeType,
       sizeBytes: opts.buffer.byteLength,
       kind: opts.kind,
@@ -95,7 +105,13 @@ export async function saveFile(opts: {
 }
 
 export async function readStoredFile(storageKey: string) {
-  return readFile(path.join(UPLOAD_ROOT, storageKey));
+  const res = await fetch(storageKey);
+  if (!res.ok) throw new Error(`Could not read stored file (${res.status}).`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+export async function deleteStoredFile(storageKey: string) {
+  await del(storageKey);
 }
 
 export async function getFileById(id: string) {

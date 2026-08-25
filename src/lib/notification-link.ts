@@ -9,6 +9,8 @@ export function notificationHref(relatedEntityType: string | null, relatedEntity
       return `/sites/${relatedEntityId}`;
     case "material_request":
       return "/materials";
+    case "chat_conversation":
+      return `/chat/${relatedEntityId}`;
     default:
       return null;
   }
