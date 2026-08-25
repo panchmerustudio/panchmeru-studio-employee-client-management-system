@@ -39,3 +39,15 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local SQLite dev database (see README — swap for Postgres in production)
+panchmeru.db
+panchmeru.db-shm
+panchmeru.db-wal
+
+# user-uploaded files (local disk storage — see README storage swap-out notes)
+/uploads/*
+!/uploads/.gitkeep
+
+# E2E test screenshots
+/e2e-shots/
