@@ -76,6 +76,10 @@ const STATUS_STYLES: Record<string, string> = {
   on_hold: "bg-amber-100 text-amber-700",
   completed: "bg-slate-100 text-slate-700",
   delayed: "bg-red-100 text-red-700",
+  // plot surveys
+  needs_review: "bg-amber-100 text-amber-700",
+  confirmed: "bg-emerald-100 text-emerald-700",
+  superseded: "bg-zinc-100 text-zinc-500",
 };
 
 export function statusClass(status: string) {

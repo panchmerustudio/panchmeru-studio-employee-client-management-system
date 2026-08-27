@@ -29,6 +29,7 @@ export function secondaryNavFor(role: RoleKey): NavItem[] {
     { href: "/leave", label: "Leave", icon: "calendar" },
     { href: "/documents", label: "Documents", icon: "file" },
     { href: "/materials", label: "Materials", icon: "package" },
+    { href: "/surveys", label: "Plot Surveys", icon: "ruler" },
     { href: "/notifications", label: "Notifications", icon: "bell" },
   ];
   if (role === "owner" || role === "manager") {

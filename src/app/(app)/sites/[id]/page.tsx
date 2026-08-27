@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
-import { sites, projects, siteAssignments, employees, users, siteVisits, siteBoundaries, sitePhotos, webauthnCredentials, geofences, attendanceEvents } from "@/db/schema";
+import { sites, projects, siteAssignments, employees, users, siteVisits, siteBoundaries, sitePhotos, webauthnCredentials, geofences, attendanceEvents, plotSurveys } from "@/db/schema";
 import { requireUser } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/rbac";
 import { PageHeader, SectionCard, Badge, EmptyState } from "@/components/ui";
@@ -64,7 +64,22 @@ export default async function SiteDetailPage({ params }: { params: Promise<{ id:
       )
     : [];
 
+  // Surveys done during a visit show up right in that visit's timeline entry (section 44/45) — a
+  // survey is one more thing that happened during the visit, same as a photo or report.
+  const visitSurveys = visits.length > 0 ? await db.query.plotSurveys.findMany({ where: inArray(plotSurveys.siteVisitId, visits.map((v) => v.id)) }) : [];
+
   const boundary = await db.query.siteBoundaries.findFirst({ where: eq(siteBoundaries.siteId, id), orderBy: (b, { desc: d }) => d(b.createdAt) });
+  const canSurvey = user.permissions.includes(PERMISSIONS.SURVEY_CREATE);
+  const latestSurvey = await db.query.plotSurveys.findFirst({
+    where: and(eq(plotSurveys.siteId, id), eq(plotSurveys.status, "confirmed")),
+    orderBy: (s, { desc: d }) => d(s.surveyNumber),
+  });
+  const myDraftSurvey = user.id
+    ? await db.query.plotSurveys.findFirst({ where: and(eq(plotSurveys.siteId, id), eq(plotSurveys.capturedBy, user.id), eq(plotSurveys.status, "in_progress")) })
+    : null;
+  const pendingSurveyCount = (
+    await db.query.plotSurveys.findMany({ where: and(eq(plotSurveys.siteId, id), eq(plotSurveys.status, "needs_review")) })
+  ).length;
   const photos = await db.select().from(sitePhotos).where(eq(sitePhotos.siteId, id)).orderBy(desc(sitePhotos.createdAt)).limit(9);
 
   const allEmployees = await db
@@ -149,6 +164,16 @@ export default async function SiteDetailPage({ params }: { params: Promise<{ id:
                           </span>
                         </div>
                       )}
+                      {visitSurveys
+                        .filter((s) => s.siteVisitId === v.id)
+                        .map((s) => (
+                          <div key={s.id} className="mt-1 flex items-center gap-1.5 text-[11px]">
+                            <Icon name="ruler" className="h-3 w-3 text-accent" />
+                            <Link href={`/surveys/${s.id}`} className="text-accent hover:underline">
+                              Plot survey #{s.surveyNumber} captured{s.rawAreaSqFt ? ` — ${s.rawAreaSqFt.toLocaleString()} sq ft` : ""}
+                            </Link>
+                          </div>
+                        ))}
                     </li>
                   );
                 })}
@@ -201,6 +226,26 @@ export default async function SiteDetailPage({ params }: { params: Promise<{ id:
               </div>
             )}
           </SectionCard>
+
+          {canSurvey && (
+            <SectionCard title="Plot survey (GPS)" action={<Link href="/surveys" className="text-xs font-medium text-accent">History</Link>}>
+              <p className="mb-2 text-xs text-muted">
+                A full GPS boundary-walk measurement — separate from the quick tap-to-point boundary above, and separate from this site&apos;s attendance check-in radius.
+              </p>
+              {latestSurvey ? (
+                <div className="mb-3 text-sm">
+                  <p>Confirmed area: <strong>{latestSurvey.rawAreaSqFt?.toLocaleString()} sq ft</strong> <span className="text-xs text-muted">(survey #{latestSurvey.surveyNumber})</span></p>
+                  <p className="text-xs text-muted">{timeAgo(latestSurvey.reviewedAt ?? latestSurvey.createdAt)} — GPS approximate, not a legal survey.</p>
+                </div>
+              ) : (
+                <p className="mb-3 text-sm text-muted">No confirmed survey yet.</p>
+              )}
+              {pendingSurveyCount > 0 && <p className="mb-2 text-xs text-amber-700">{pendingSurveyCount} survey{pendingSurveyCount === 1 ? "" : "s"} awaiting review.</p>}
+              <Link href={`/sites/${id}/survey`} className="btn btn-secondary w-full">
+                <Icon name="ruler" className="h-4 w-4" /> {myDraftSurvey ? "Resume survey" : "Measure plot"}
+              </Link>
+            </SectionCard>
+          )}
         </div>
       </div>
     </div>

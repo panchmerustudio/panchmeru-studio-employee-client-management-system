@@ -15,6 +15,8 @@ export function notificationHref(relatedEntityType: string | null, relatedEntity
       return "/settings/storage";
     case "job_application":
       return `/recruitment/${relatedEntityId}`;
+    case "plot_survey":
+      return `/surveys/${relatedEntityId}`;
     default:
       return null;
   }

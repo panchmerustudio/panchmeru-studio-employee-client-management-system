@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { startAuthentication } from "@simplewebauthn/browser";
 import { getCurrentPosition } from "@/lib/use-geolocation";
@@ -126,6 +127,10 @@ export function ActiveVisit({ siteId, siteVisitId, siteName, hasBiometric, start
           </div>
         </div>
       </div>
+
+      <Link href={`/sites/${siteId}/survey`} className="btn btn-secondary w-full">
+        <Icon name="ruler" className="h-4 w-4" /> Measure plot (GPS survey)
+      </Link>
 
       <div className="card p-4">
         <h3 className="mb-2 text-sm font-semibold">Add a photo</h3>

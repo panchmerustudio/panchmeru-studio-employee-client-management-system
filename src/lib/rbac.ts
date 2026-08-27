@@ -31,6 +31,9 @@ export const PERMISSIONS = {
   SETTINGS_MANAGE: "settings.manage",
   DASHBOARD_OWNER: "dashboard.owner",
   RECRUITMENT_MANAGE: "recruitment.manage",
+  SURVEY_CREATE: "survey.create",
+  SURVEY_EDIT: "survey.edit",
+  SURVEY_APPROVE: "survey.approve",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -57,6 +60,9 @@ export const ALL_PERMISSIONS: { key: PermissionKey; description: string }[] = [
   { key: PERMISSIONS.SETTINGS_MANAGE, description: "Manage feature flags & studio settings" },
   { key: PERMISSIONS.DASHBOARD_OWNER, description: "View the owner operations dashboard" },
   { key: PERMISSIONS.RECRUITMENT_MANAGE, description: "Review job applications submitted through the public careers page" },
+  { key: PERMISSIONS.SURVEY_CREATE, description: "Perform a mobile GPS plot boundary survey" },
+  { key: PERMISSIONS.SURVEY_EDIT, description: "Manually correct a survey's boundary points" },
+  { key: PERMISSIONS.SURVEY_APPROVE, description: "Confirm a survey or request re-measurement" },
 ];
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
@@ -81,6 +87,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
     PERMISSIONS.REPORT_VIEW,
     PERMISSIONS.AUDIT_VIEW,
     PERMISSIONS.DASHBOARD_OWNER,
+    PERMISSIONS.SURVEY_CREATE,
+    PERMISSIONS.SURVEY_EDIT,
+    PERMISSIONS.SURVEY_APPROVE,
   ],
   supervisor: [
     PERMISSIONS.EMPLOYEE_VIEW,
@@ -94,6 +103,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
     PERMISSIONS.DOCUMENT_UPLOAD,
     PERMISSIONS.MATERIAL_REQUEST,
     PERMISSIONS.REPORT_VIEW,
+    PERMISSIONS.SURVEY_CREATE,
   ],
   employee: [
     PERMISSIONS.ATTENDANCE_SELF,
@@ -101,6 +111,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
     PERMISSIONS.SITE_VISIT,
     PERMISSIONS.DOCUMENT_UPLOAD,
     PERMISSIONS.MATERIAL_REQUEST,
+    PERMISSIONS.SURVEY_CREATE,
   ],
 };
 
