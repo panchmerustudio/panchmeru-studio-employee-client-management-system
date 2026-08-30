@@ -46,6 +46,8 @@ export const ALLOWED_MIME_TYPES = new Set([
   "image/vnd.dwg",
   "application/acad",
   "application/dwg",
+  "application/dxf",
+  "image/vnd.dxf",
   "audio/webm",
   "audio/mp4",
   "audio/mpeg",

@@ -34,6 +34,8 @@ export const PERMISSIONS = {
   SURVEY_CREATE: "survey.create",
   SURVEY_EDIT: "survey.edit",
   SURVEY_APPROVE: "survey.approve",
+  CAD_CREATE: "cad.create",
+  CAD_APPROVE: "cad.approve",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -63,6 +65,8 @@ export const ALL_PERMISSIONS: { key: PermissionKey; description: string }[] = [
   { key: PERMISSIONS.SURVEY_CREATE, description: "Perform a mobile GPS plot boundary survey" },
   { key: PERMISSIONS.SURVEY_EDIT, description: "Manually correct a survey's boundary points" },
   { key: PERMISSIONS.SURVEY_APPROVE, description: "Confirm a survey or request re-measurement" },
+  { key: PERMISSIONS.CAD_CREATE, description: "Upload a CAD (DXF) drawing and generate a 3D model from it" },
+  { key: PERMISSIONS.CAD_APPROVE, description: "Approve a generated 3D model for export" },
 ];
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
@@ -90,6 +94,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
     PERMISSIONS.SURVEY_CREATE,
     PERMISSIONS.SURVEY_EDIT,
     PERMISSIONS.SURVEY_APPROVE,
+    PERMISSIONS.CAD_CREATE,
+    PERMISSIONS.CAD_APPROVE,
   ],
   supervisor: [
     PERMISSIONS.EMPLOYEE_VIEW,
@@ -104,6 +110,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
     PERMISSIONS.MATERIAL_REQUEST,
     PERMISSIONS.REPORT_VIEW,
     PERMISSIONS.SURVEY_CREATE,
+    PERMISSIONS.CAD_CREATE,
   ],
   employee: [
     PERMISSIONS.ATTENDANCE_SELF,

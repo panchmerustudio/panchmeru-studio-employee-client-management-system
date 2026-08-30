@@ -6,6 +6,7 @@ import { projects, projectTypes, projectMilestones, projectMembers, employees, u
 import { requireUser } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/rbac";
 import { PageHeader, SectionCard, Badge, EmptyState } from "@/components/ui";
+import { Icon } from "@/components/icon";
 import { formatDate } from "@/lib/format";
 import { StatusSelect } from "./status-select";
 import { Milestones } from "./milestones";
@@ -106,6 +107,15 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
               </ul>
             )}
           </SectionCard>
+
+          {user.permissions.includes(PERMISSIONS.CAD_CREATE) && (
+            <SectionCard title="3D Modeler">
+              <p className="mb-3 text-xs text-muted">Turn a DXF drawing into an exact, editable 3D model — CAD measurements stay locked.</p>
+              <Link href={`/projects/${id}/cad`} className="btn btn-secondary w-full">
+                <Icon name="cube" className="h-4 w-4" /> Open 3D Modeler
+              </Link>
+            </SectionCard>
+          )}
         </div>
       </div>
     </div>

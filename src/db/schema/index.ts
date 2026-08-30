@@ -17,3 +17,4 @@ export * from "./chat";
 export * from "./storage-settings";
 export * from "./recruitment";
 export * from "./survey";
+export * from "./cad";
