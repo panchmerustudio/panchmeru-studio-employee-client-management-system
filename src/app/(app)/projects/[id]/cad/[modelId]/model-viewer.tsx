@@ -21,6 +21,7 @@ export function ModelViewer({
   entities,
   windowSillMm,
   canApprove,
+  canDownload,
   status,
 }: {
   modelId: string;
@@ -28,6 +29,7 @@ export function ModelViewer({
   entities: CadEntityInput[];
   windowSillMm: number;
   canApprove: boolean;
+  canDownload: boolean;
   status: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -183,14 +185,18 @@ export function ModelViewer({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <button onClick={exportGLB} className="btn btn-secondary">
-          Export GLB
-        </button>
-        <button onClick={exportObj} className="btn btn-secondary">
-          Export OBJ
-        </button>
-      </div>
+      {canDownload ? (
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={exportGLB} className="btn btn-secondary">
+            Export GLB
+          </button>
+          <button onClick={exportObj} className="btn btn-secondary">
+            Export OBJ
+          </button>
+        </div>
+      ) : (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-center text-xs text-amber-800">View this model in-app only — only the studio owner can export it.</p>
+      )}
 
       {canApprove && status === "ready" && (
         <div className="card p-4">

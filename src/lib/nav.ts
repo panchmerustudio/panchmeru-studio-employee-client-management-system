@@ -36,6 +36,7 @@ export function secondaryNavFor(role: RoleKey): NavItem[] {
   if (role === "owner" || role === "manager") {
     return [
       ...common,
+      { href: "/clients", label: "Clients", icon: "users" },
       { href: "/reports", label: "Reports", icon: "chart" },
       { href: "/attendance/team", label: "Team Attendance", icon: "clock" },
       { href: "/audit", label: "Audit Log", icon: "shield" },

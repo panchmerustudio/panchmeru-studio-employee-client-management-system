@@ -43,6 +43,13 @@
       "when": 1788105664878,
       "tag": "0005_sticky_romulus",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788107176064,
+      "tag": "0006_open_silhouette",
+      "breakpoints": true
     }
   ]
 }

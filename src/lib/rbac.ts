@@ -36,6 +36,8 @@ export const PERMISSIONS = {
   SURVEY_APPROVE: "survey.approve",
   CAD_CREATE: "cad.create",
   CAD_APPROVE: "cad.approve",
+  FILE_DOWNLOAD: "file.download",
+  CLIENT_MANAGE: "client.manage",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -67,6 +69,8 @@ export const ALL_PERMISSIONS: { key: PermissionKey; description: string }[] = [
   { key: PERMISSIONS.SURVEY_APPROVE, description: "Confirm a survey or request re-measurement" },
   { key: PERMISSIONS.CAD_CREATE, description: "Upload a CAD (DXF) drawing and generate a 3D model from it" },
   { key: PERMISSIONS.CAD_APPROVE, description: "Approve a generated 3D model for export" },
+  { key: PERMISSIONS.FILE_DOWNLOAD, description: "Save original documents, drawings, and 3D model exports to a device — everyone else gets in-app viewing only" },
+  { key: PERMISSIONS.CLIENT_MANAGE, description: "Add clients, manage their portal login, and share drawings with them" },
 ];
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
@@ -96,6 +100,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
     PERMISSIONS.SURVEY_APPROVE,
     PERMISSIONS.CAD_CREATE,
     PERMISSIONS.CAD_APPROVE,
+    PERMISSIONS.CLIENT_MANAGE,
   ],
   supervisor: [
     PERMISSIONS.EMPLOYEE_VIEW,

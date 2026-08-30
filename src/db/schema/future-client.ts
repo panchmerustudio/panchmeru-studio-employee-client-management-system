@@ -9,13 +9,22 @@ import { tasks } from "./tasks";
 import { files } from "./files";
 
 /**
- * FUTURE — CLIENT MANAGEMENT (sections 6-20, 43-51, 72-80).
+ * CLIENT MANAGEMENT (sections 6-20, 43-51, 72-80).
  *
- * These tables exist today so the eventual CLIENT -> PROJECT -> SITE ->
- * DRAWING -> SENT -> VIEWED -> REVISION -> APPROVAL chain never needs a
- * redesign. They are NOT written to or exposed in the UI while the
- * CLIENT_MANAGEMENT feature flag is off (see lib/feature-flags.ts) — no
- * employee or client ever sees them until the studio turns the module on.
+ * These tables exist so the eventual CLIENT -> PROJECT -> SITE -> DRAWING
+ * -> SENT -> VIEWED -> REVISION -> APPROVAL chain never needs a redesign.
+ * Most of this module (contacts, comments, annotations, revision requests,
+ * messaging, meetings) is still FUTURE and stays unwritten/unexposed while
+ * the CLIENT_MANAGEMENT flag is off (see lib/feature-flags.ts).
+ *
+ * `clients`, `clientUsers`, `clientSessions`, `clientDrawingShares` and
+ * `clientActivities` are the exception — a deliberately small slice is
+ * LIVE (gated behind PERMISSIONS.CLIENT_MANAGE + the CLIENT_PORTAL flag):
+ * the studio can create a client login and share a document version with
+ * them, and the client can sign into /client to view (never download)
+ * exactly the drawings shared with them, watermarked in-app. Everything
+ * else on this file — revision requests, comments, drawing annotations,
+ * messaging, meetings, formal approvals — is still not built.
  */
 
 export const clients = pgTable("clients", {
@@ -58,6 +67,20 @@ export const clientUsers = pgTable("client_users", {
   passwordHash: text("password_hash"),
   status: text("status", { enum: ["active", "invited", "disabled"] }).notNull().default("invited"),
   lastLoginAt: timestamp("last_login_at"),
+  ...createdAtOnly(),
+});
+
+/** DB-backed client-portal session — separate cookie/table from staff `userSessions`, same revocable-per-device design. */
+export const clientSessions = pgTable("client_sessions", {
+  id: idColumn(),
+  clientUserId: text("client_user_id")
+    .notNull()
+    .references(() => clientUsers.id, { onDelete: "cascade" }),
+  sessionToken: text("session_token").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  revokedAt: timestamp("revoked_at"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
   ...createdAtOnly(),
 });
 

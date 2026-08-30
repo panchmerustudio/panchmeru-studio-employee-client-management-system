@@ -20,6 +20,7 @@ export default async function CadModelPage({ params }: { params: Promise<{ id: s
 
   const canCreate = user.permissions.includes(PERMISSIONS.CAD_CREATE);
   const canApprove = user.permissions.includes(PERMISSIONS.CAD_APPROVE);
+  const canDownload = user.permissions.includes(PERMISSIONS.FILE_DOWNLOAD);
   if (!canCreate && !canApprove) redirect(`/projects/${id}`);
 
   const model = await db.query.cadModels.findFirst({ where: eq(cadModels.id, modelId) });
@@ -95,6 +96,7 @@ export default async function CadModelPage({ params }: { params: Promise<{ id: s
             }))}
             windowSillMm={model.windowSillMm ?? 900}
             canApprove={canApprove}
+            canDownload={canDownload}
             status={model.status}
           />
         </SectionCard>

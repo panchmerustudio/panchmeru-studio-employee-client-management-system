@@ -8,6 +8,6 @@ const ModelViewer = dynamic(() => import("./model-viewer").then((m) => m.ModelVi
   loading: () => <div className="card h-[420px] animate-pulse bg-slate-100" />,
 });
 
-export function ModelViewerClient(props: { modelId: string; modelName: string; entities: CadEntityInput[]; windowSillMm: number; canApprove: boolean; status: string }) {
+export function ModelViewerClient(props: { modelId: string; modelName: string; entities: CadEntityInput[]; windowSillMm: number; canApprove: boolean; canDownload: boolean; status: string }) {
   return <ModelViewer {...props} />;
 }
