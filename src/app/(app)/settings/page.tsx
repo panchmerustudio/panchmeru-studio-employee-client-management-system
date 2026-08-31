@@ -8,9 +8,11 @@ import { PageHeader, SectionCard } from "@/components/ui";
 import { Icon } from "@/components/icon";
 import { formatBytes } from "@/lib/format";
 import { getStorageUsage } from "@/lib/storage-usage";
+import { getLocationSettings } from "@/lib/location-tracking";
 import { FlagToggle } from "./flag-toggle";
 import { SyncPermissionsButton } from "./sync-permissions-button";
 import { DocumentCategories } from "./document-categories";
+import { LocationRetentionForm } from "./location-retention-form";
 
 // These three used to be listed under "Future modules" as off-by-default.
 // They're now fully live (drawing library, categories, approval/revision
@@ -28,6 +30,7 @@ export default async function SettingsPage() {
   const futureFlags = flags.filter((f) => !NOW_ACTIVE_FLAG_KEYS.has(f.key));
   const categories = await db.select({ key: documentCategories.key, name: documentCategories.name }).from(documentCategories).orderBy(documentCategories.name);
   const usage = await getStorageUsage().catch(() => null);
+  const locationSettings = await getLocationSettings();
 
   return (
     <div className="space-y-5">
@@ -89,6 +92,20 @@ export default async function SettingsPage() {
           </Link>
           .
         </p>
+      </SectionCard>
+
+      <SectionCard title="Employee Live Location" action={<span className="text-xs text-emerald-700">Active</span>}>
+        <p className="mb-4 text-sm text-muted">
+          Location is tracked only during an active site visit (foreground GPS while the app is open — stops the instant checkout
+          happens) and at office/site check-in and check-out. Never continuous or off-the-clock. See the live map and out-of-geofence
+          exceptions at{" "}
+          <Link href="/live-locations" className="font-medium text-brand-ink underline">
+            Live Locations
+          </Link>
+          .
+        </p>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">GPS trail retention</h3>
+        <LocationRetentionForm retentionDays={locationSettings.retentionDays} />
       </SectionCard>
 
       <SectionCard title="Future modules" action={<span className="text-xs text-muted">Off by default</span>}>

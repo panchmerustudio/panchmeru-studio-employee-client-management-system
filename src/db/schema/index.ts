@@ -20,3 +20,4 @@ export * from "./storage-settings";
 export * from "./recruitment";
 export * from "./survey";
 export * from "./cad";
+export * from "./location-tracking";

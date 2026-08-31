@@ -50,6 +50,7 @@ export function secondaryNavFor(role: RoleKey): NavItem[] {
       { href: "/vendors", label: "Vendors", icon: "briefcase" },
       { href: "/reports", label: "Reports", icon: "chart" },
       { href: "/attendance/team", label: "Team Attendance", icon: "clock" },
+      { href: "/live-locations", label: "Live Locations", icon: "map-pin" },
       { href: "/audit", label: "Audit Log", icon: "shield" },
       { href: "/recruitment", label: "Recruitment", icon: "briefcase" },
       { href: "/search", label: "Search", icon: "search" },
