@@ -9,6 +9,7 @@ import { Icon } from "@/components/icon";
 import { formatBytes } from "@/lib/format";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { FlagToggle } from "./flag-toggle";
+import { SyncPermissionsButton } from "./sync-permissions-button";
 
 export default async function SettingsPage() {
   const user = await requirePermission(PERMISSIONS.SETTINGS_MANAGE).catch(() => null);
@@ -42,6 +43,14 @@ export default async function SettingsPage() {
         </Link>
       </SectionCard>
 
+      <SectionCard title="Permissions">
+        <p className="mb-3 text-sm text-muted">
+          Every time a new feature adds a permission (like the CAD Modeler, in-app document viewing, or client sharing did), it has to
+          reach this studio&apos;s database once before roles actually get it. Click this after any update instead of visiting a setup URL by hand.
+        </p>
+        <SyncPermissionsButton />
+      </SectionCard>
+
       <SectionCard title="Future modules" action={<span className="text-xs text-muted">Off by default</span>}>
         <p className="mb-4 text-sm text-muted">
           These modules are fully modeled in the database and ready to go, but stay hidden from the app until you turn them on —
@@ -52,7 +61,10 @@ export default async function SettingsPage() {
             <li key={f.id} className="flex items-center justify-between py-3">
               <div>
                 <div className="text-sm font-medium">{f.name}</div>
-                <div className="text-xs text-muted">{f.description}</div>
+                <div className="text-xs text-muted">
+                  {f.description}
+                  {(f.key === "CLIENT_MANAGEMENT" || f.key === "CLIENT_PORTAL") && " — a basic version (add a client, share a drawing, client views it) is already live under Clients, independent of this toggle."}
+                </div>
               </div>
               <FlagToggle flagKey={f.key} enabled={f.enabled} />
             </li>
