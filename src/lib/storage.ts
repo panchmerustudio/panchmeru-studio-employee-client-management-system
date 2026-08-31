@@ -32,6 +32,13 @@ const r2 = new S3Client({
     accessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
   },
+  // Recent AWS SDK versions default to WHEN_SUPPORTED, which auto-attaches
+  // an x-amz-checksum-crc32 param to presigned PutObject URLs. R2 doesn't
+  // always play well with that (a frequent cause of a presigned PUT that
+  // hangs or gets blocked before R2 ever returns a response, showing up in
+  // the browser as a bare "Failed to fetch"), so opt back into the old
+  // behavior: only add a checksum when a command explicitly asks for one.
+  requestChecksumCalculation: "WHEN_REQUIRED",
 });
 const BUCKET = process.env.R2_BUCKET_NAME ?? "";
 
