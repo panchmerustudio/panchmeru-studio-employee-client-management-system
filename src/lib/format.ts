@@ -92,6 +92,16 @@ const STATUS_STYLES: Record<string, string> = {
   revision_requested: "bg-orange-100 text-orange-700",
   invited: "bg-amber-100 text-amber-700",
   disabled: "bg-red-100 text-red-700",
+  // document version status
+  draft: "bg-slate-100 text-slate-600",
+  internal_revised: "bg-slate-100 text-slate-600",
+  sent_to_client: "bg-blue-100 text-blue-700",
+  client_revision_requested: "bg-orange-100 text-orange-700",
+  // client revision request status
+  open: "bg-amber-100 text-amber-700",
+  assigned: "bg-blue-100 text-blue-700",
+  revised: "bg-purple-100 text-purple-700",
+  resent: "bg-blue-100 text-blue-700",
 };
 
 export function statusClass(status: string) {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Icon } from "./icon";
 
 /**
  * In-app-only document viewer (section: "no download outside the app").
@@ -161,7 +162,7 @@ export function ProtectedViewer({
       {errorMsg && status === "ready" && <p className="text-center text-xs text-muted">{errorMsg}</p>}
       {downloadHref && (
         <a href={downloadHref} className="btn btn-secondary w-full">
-          Download original
+          <Icon name="download" className="h-4 w-4" /> Download original
         </a>
       )}
     </div>

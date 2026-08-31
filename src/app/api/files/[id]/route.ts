@@ -72,12 +72,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       : null;
     if (!share) return NextResponse.json({ error: "This file hasn't been shared with you." }, { status: 403 });
 
-    // Clients never get a real download — ?download=1 is ignored for them.
+    // Clients only ever get a real download once a drawing is APPROVED —
+    // everything still in flight (pending review, revision requested)
+    // stays in-app/watermarked-only, same protective posture as before.
+    // ?download=1 is silently ignored otherwise.
+    const canClientDownload = wantsDownload && (version?.status === "approved" || share.responseStatus === "approved");
     const buffer = await readStoredFile(file.storageKey);
     return new NextResponse(buffer as unknown as BodyInit, {
       headers: {
         "Content-Type": file.mimeType,
-        "Content-Disposition": `inline; filename="${encodeURIComponent(file.originalName)}"`,
+        "Content-Disposition": `${canClientDownload ? "attachment" : "inline"}; filename="${encodeURIComponent(file.originalName)}"`,
         "Cache-Control": "private, no-store",
       },
     });

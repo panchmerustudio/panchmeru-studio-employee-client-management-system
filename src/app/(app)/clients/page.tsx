@@ -18,12 +18,20 @@ export default async function ClientsPage() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Clients" subtitle={`${rows.length} client${rows.length === 1 ? "" : "s"} · view-only portal logins`} />
+      <PageHeader
+        title="Clients"
+        subtitle={`${rows.length} client${rows.length === 1 ? "" : "s"} · in-app portal logins`}
+        action={
+          <Link href="/clients/revision-requests" className="btn btn-secondary">
+            <Icon name="edit" className="h-4 w-4" /> Revision Requests
+          </Link>
+        }
+      />
 
       <AddClientForm />
 
       {rows.length === 0 ? (
-        <EmptyState icon="users" title="No clients yet" subtitle="Add a client above to give them a view-only portal login for shared drawings." />
+        <EmptyState icon="users" title="No clients yet" subtitle="Add a client above to give them a portal login for their shared drawings, approvals, and revisions." />
       ) : (
         <div className="card divide-y divide-border">
           {rows.map((c) => (

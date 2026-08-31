@@ -5,7 +5,9 @@ import { clients, clientUsers, clientDrawingShares, documentVersions, documents 
 import { requireUser } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/rbac";
 import { PageHeader, SectionCard, Badge } from "@/components/ui";
+import { Icon } from "@/components/icon";
 import { timeAgo, statusLabel } from "@/lib/format";
+import { getClientActivity } from "@/lib/client-portal";
 import { ResetPasswordForm } from "./reset-password-form";
 
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -35,6 +37,8 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
     .where(eq(clientDrawingShares.clientId, id))
     .orderBy(desc(clientDrawingShares.createdAt));
 
+  const activity = await getClientActivity(id, 25);
+
   return (
     <div className="space-y-5">
       <PageHeader title={client.name} subtitle={client.companyName ?? undefined} />
@@ -57,7 +61,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
         )}
       </SectionCard>
 
-      <SectionCard title="Shared drawings" action={<span className="text-xs text-muted">view-only — never downloadable by the client</span>}>
+      <SectionCard title="Shared drawings" action={<span className="text-xs text-muted">downloadable once approved</span>}>
         {shares.length === 0 ? (
           <p className="text-sm text-muted">Nothing shared yet — share a document version from its detail page.</p>
         ) : (
@@ -75,6 +79,26 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
                 <div className="flex items-center gap-2">
                   <Badge status={s.viewStatus} />
                   <Badge status={s.responseStatus} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </SectionCard>
+
+      <SectionCard title="Activity" action={<span className="text-xs text-muted">who shared/viewed/approved what, and when — section 17</span>}>
+        {activity.length === 0 ? (
+          <p className="text-sm text-muted">No activity recorded yet.</p>
+        ) : (
+          <ul className="space-y-2.5">
+            {activity.map((a) => (
+              <li key={a.id} className="flex items-start gap-2.5">
+                <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                  <Icon name="bell" className="h-3.5 w-3.5" />
+                </div>
+                <div>
+                  <p className="text-sm text-foreground">{a.description}</p>
+                  <p className="text-xs text-muted">{timeAgo(a.createdAt)}</p>
                 </div>
               </li>
             ))}

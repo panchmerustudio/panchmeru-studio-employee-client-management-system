@@ -5,7 +5,7 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
-import { clients, clientContacts, clientUsers, clientDrawingShares, clientActivities, documentVersions, documents } from "@/db/schema";
+import { clients, clientContacts, clientUsers, clientDrawingShares, clientActivities, clientRevisionRequests, documentVersions, documents } from "@/db/schema";
 import { requirePermission } from "@/lib/auth";
 import { hashClientPassword } from "@/lib/client-auth";
 import { recordAudit } from "@/lib/audit";
@@ -115,4 +115,47 @@ export async function shareDocumentWithClient(documentVersionId: string, clientI
   revalidatePath(`/documents/${version.documentId}`);
   revalidatePath(`/clients/${clientId}`);
   return share;
+}
+
+const REVISION_REQUEST_STATUSES = ["open", "assigned", "revised", "resent", "approved", "rejected"] as const;
+type RevisionRequestStatus = (typeof REVISION_REQUEST_STATUSES)[number];
+
+export async function assignRevisionRequest(requestId: string, employeeId: string | null) {
+  const actor = await requirePermission(PERMISSIONS.CLIENT_MANAGE);
+  const request = await db.query.clientRevisionRequests.findFirst({ where: eq(clientRevisionRequests.id, requestId) });
+  if (!request) throw new Error("Revision request not found.");
+
+  await db
+    .update(clientRevisionRequests)
+    .set({ assignedEmployeeId: employeeId || null, status: employeeId && request.status === "open" ? "assigned" : request.status })
+    .where(eq(clientRevisionRequests.id, requestId));
+
+  await recordAudit({ actor, action: "client.revision_request_assigned", entityType: "client_revision_request", entityId: requestId, newState: { employeeId } });
+  revalidatePath("/clients/revision-requests");
+}
+
+export async function setRevisionRequestStatus(requestId: string, status: RevisionRequestStatus) {
+  const actor = await requirePermission(PERMISSIONS.CLIENT_MANAGE);
+  if (!REVISION_REQUEST_STATUSES.includes(status)) throw new Error("Invalid status.");
+
+  const request = await db.query.clientRevisionRequests.findFirst({ where: eq(clientRevisionRequests.id, requestId) });
+  if (!request) throw new Error("Revision request not found.");
+
+  await db
+    .update(clientRevisionRequests)
+    .set({ status, resubmissionDate: status === "resent" ? new Date() : request.resubmissionDate })
+    .where(eq(clientRevisionRequests.id, requestId));
+
+  if (status === "revised" || status === "resent") {
+    await db.insert(clientActivities).values({
+      clientId: request.clientId,
+      activityType: status === "revised" ? "revised_version_uploaded" : "revision_resent",
+      description: `Revision request #${String(request.sequenceNumber).padStart(3, "0")} is now ${status === "revised" ? "revised internally" : "resent to you"}.`,
+      relatedEntityType: "client_revision_request",
+      relatedEntityId: requestId,
+    });
+  }
+
+  await recordAudit({ actor, action: "client.revision_request_status_changed", entityType: "client_revision_request", entityId: requestId, newState: { status } });
+  revalidatePath("/clients/revision-requests");
 }
