@@ -5,7 +5,7 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
-import { clients, clientContacts, clientUsers, clientDrawingShares, clientActivities, clientRevisionRequests, documentVersions, documents } from "@/db/schema";
+import { clients, clientContacts, clientUsers, clientDrawingShares, clientActivities, clientRevisionRequests, documentVersions, documents, projects } from "@/db/schema";
 import { requirePermission } from "@/lib/auth";
 import { hashClientPassword } from "@/lib/client-auth";
 import { recordAudit } from "@/lib/audit";
@@ -158,4 +158,32 @@ export async function setRevisionRequestStatus(requestId: string, status: Revisi
 
   await recordAudit({ actor, action: "client.revision_request_status_changed", entityType: "client_revision_request", entityId: requestId, newState: { status } });
   revalidatePath("/clients/revision-requests");
+}
+
+/**
+ * Links an existing project to this client (projects.clientId was always
+ * nullable/unset in practice — see projects.ts's doc comment). Needed
+ * before payment tracking (project-scoped) or the client-visible vendor
+ * list (also project-scoped) can show anything for this client.
+ */
+export async function linkProjectToClient(clientId: string, projectId: string) {
+  const actor = await requirePermission(PERMISSIONS.CLIENT_MANAGE);
+  if (!projectId) throw new Error("Choose a project.");
+
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+  if (!project) throw new Error("Project not found.");
+  if (project.clientId && project.clientId !== clientId) throw new Error("That project is already linked to a different client.");
+
+  await db.update(projects).set({ clientId }).where(eq(projects.id, projectId));
+  await recordAudit({ actor, action: "client.project_linked", entityType: "project", entityId: projectId, newState: { clientId } });
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath(`/clients/${clientId}/payments`);
+}
+
+export async function unlinkProjectFromClient(clientId: string, projectId: string) {
+  const actor = await requirePermission(PERMISSIONS.CLIENT_MANAGE);
+  await db.update(projects).set({ clientId: null }).where(eq(projects.id, projectId));
+  await recordAudit({ actor, action: "client.project_unlinked", entityType: "project", entityId: projectId });
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath(`/clients/${clientId}/payments`);
 }

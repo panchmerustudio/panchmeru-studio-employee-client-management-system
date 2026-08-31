@@ -73,9 +73,15 @@ const STATUS_STYLES: Record<string, string> = {
   half_day: "bg-blue-100 text-blue-700",
   // generic
   active: "bg-emerald-100 text-emerald-700",
+  inactive: "bg-zinc-100 text-zinc-500",
   on_hold: "bg-amber-100 text-amber-700",
   completed: "bg-slate-100 text-slate-700",
   delayed: "bg-red-100 text-red-700",
+  // payment milestones
+  paid: "bg-emerald-100 text-emerald-700",
+  partial: "bg-blue-100 text-blue-700",
+  due_today: "bg-amber-100 text-amber-700",
+  upcoming: "bg-slate-100 text-slate-600",
   // plot surveys
   needs_review: "bg-amber-100 text-amber-700",
   confirmed: "bg-emerald-100 text-emerald-700",

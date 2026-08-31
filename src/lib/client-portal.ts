@@ -1,7 +1,7 @@
 import "server-only";
-import { eq, and, desc, asc } from "drizzle-orm";
+import { eq, and, desc, asc, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
-import { clientDrawingShares, clientRevisionRequests, clientActivities, documentVersions, documents, documentCategories, files } from "@/db/schema";
+import { clientDrawingShares, clientRevisionRequests, clientActivities, documentVersions, documents, documentCategories, files, projects, vendorAssignments, vendors } from "@/db/schema";
 
 /**
  * Client-portal read models (src/app/client/**). Everything here is scoped
@@ -142,4 +142,28 @@ export async function getClientActivity(clientId: string, limit = 15) {
 export async function nextRevisionSequenceNumber(clientId: string): Promise<number> {
   const existing = await db.query.clientRevisionRequests.findMany({ where: eq(clientRevisionRequests.clientId, clientId), columns: { id: true } });
   return existing.length + 1;
+}
+
+export type ClientVisibleVendor = { id: string; name: string; category: string | null; status: string };
+
+/**
+ * Section 20/25: the client's dashboard lists vendors working on THEIR
+ * project — name/category/status only, never mobile/email/rating/address
+ * (that's staff-only, see /vendors) and never anything financial. Derived
+ * from vendorAssignments -> projects (matched to this client) -> vendors,
+ * deduplicated since a vendor can be assigned to more than one of the
+ * client's projects/sites.
+ */
+export async function getClientVisibleVendors(clientId: string): Promise<ClientVisibleVendor[]> {
+  const linkedProjects = await db.query.projects.findMany({ where: eq(projects.clientId, clientId), columns: { id: true } });
+  if (linkedProjects.length === 0) return [];
+
+  const assignmentRows = await db
+    .select({ id: vendors.id, name: vendors.name, category: vendors.category, status: vendors.status })
+    .from(vendorAssignments)
+    .innerJoin(vendors, eq(vendors.id, vendorAssignments.vendorId))
+    .where(inArray(vendorAssignments.projectId, linkedProjects.map((p) => p.id)));
+
+  const byId = new Map(assignmentRows.map((v) => [v.id, v]));
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
 }

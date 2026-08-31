@@ -6,14 +6,17 @@ const TABS = [
   { href: "/client/drawings", label: "Drawings", icon: "file" },
   { href: "/client/approved", label: "Approved", icon: "check-circle" },
   { href: "/client/revisions", label: "Revisions", icon: "edit" },
+  { href: "/client/payments", label: "Payments", icon: "chart" },
 ] as const;
 
 /**
- * Deliberately just 4 tabs (spec: "the client should NOT have to navigate
- * through complicated project-management screens"). Rendered at the top of
- * every authenticated /client page rather than via a shared layout, so the
- * existing login/[shareId] routes didn't need restructuring into a route
- * group to pick it up.
+ * Deliberately kept short (spec: "the client should NOT have to navigate
+ * through complicated project-management screens") — Payments is the 5th
+ * tab and only shows real numbers once a project's payment tracking is
+ * switched on (see /client/payments's empty state otherwise). Rendered at
+ * the top of every authenticated /client page rather than via a shared
+ * layout, so the existing login/[shareId] routes didn't need restructuring
+ * into a route group to pick it up.
  */
 export function ClientNav({ active }: { active: (typeof TABS)[number]["href"] }) {
   return (

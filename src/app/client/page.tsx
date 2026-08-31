@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { getCurrentClient } from "@/lib/client-auth";
-import { getClientDrawings, getClientApprovedDrawings, getClientRevisionRequests, getClientActivity } from "@/lib/client-portal";
-import { PageHeader, StatCard } from "@/components/ui";
+import { getClientDrawings, getClientApprovedDrawings, getClientRevisionRequests, getClientActivity, getClientVisibleVendors } from "@/lib/client-portal";
+import { getClientPaymentOverview } from "@/lib/client-payments";
+import { PageHeader, StatCard, Badge } from "@/components/ui";
 import { Icon } from "@/components/icon";
 import { timeAgo } from "@/lib/format";
 import { LogoutButton } from "./logout-button";
@@ -11,15 +12,18 @@ export default async function ClientPortalHome() {
   const client = await getCurrentClient();
   if (!client) redirect("/client/login");
 
-  const [drawings, approved, revisions, activity] = await Promise.all([
+  const [drawings, approved, revisions, activity, vendors, paymentSummaries] = await Promise.all([
     getClientDrawings(client.clientId),
     getClientApprovedDrawings(client.clientId),
     getClientRevisionRequests(client.clientId),
     getClientActivity(client.clientId, 8),
+    getClientVisibleVendors(client.clientId),
+    getClientPaymentOverview(client.clientId),
   ]);
 
   const actionRequired = drawings.filter((d) => d.responseStatus === "awaiting_response").length;
   const openRevisions = revisions.filter((r) => !["approved", "rejected"].includes(r.status)).length;
+  const totalPending = paymentSummaries.reduce((sum, s) => sum + s.totalPending, 0);
 
   return (
     <div className="mx-auto max-w-2xl space-y-5 px-4 py-8">
@@ -47,7 +51,33 @@ export default async function ClientPortalHome() {
         <StatCard label="Approved drawings" value={approved.length} icon="check-circle" href="/client/approved" tone="success" />
         <StatCard label="Open revisions" value={openRevisions} icon="edit" href="/client/revisions" tone={openRevisions > 0 ? "warning" : "default"} />
         <StatCard label="Action required" value={actionRequired} icon="alert" href="/client/drawings" tone={actionRequired > 0 ? "danger" : "default"} />
+        {paymentSummaries.length > 0 && (
+          <StatCard
+            label={totalPending > 0 ? "Pending payment" : "Payments"}
+            value={totalPending > 0 ? `₹${totalPending.toLocaleString("en-IN")}` : "Up to date"}
+            icon="chart"
+            href="/client/payments"
+            tone={totalPending > 0 ? "warning" : "success"}
+          />
+        )}
       </div>
+
+      {vendors.length > 0 && (
+        <div className="card p-4">
+          <h3 className="mb-3 text-sm font-semibold">Vendors on your project</h3>
+          <ul className="divide-y divide-border">
+            {vendors.map((v) => (
+              <li key={v.id} className="flex items-center justify-between py-2 text-sm">
+                <div>
+                  <div className="font-medium text-foreground">{v.name}</div>
+                  <div className="text-xs text-muted">{v.category ?? "—"}</div>
+                </div>
+                <Badge status={v.status} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="card p-4">
         <h3 className="mb-3 text-sm font-semibold">Recent activity</h3>

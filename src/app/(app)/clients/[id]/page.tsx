@@ -1,7 +1,8 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, isNull } from "drizzle-orm";
 import { db } from "@/db/client";
-import { clients, clientUsers, clientDrawingShares, documentVersions, documents } from "@/db/schema";
+import { clients, clientUsers, clientDrawingShares, documentVersions, documents, projects } from "@/db/schema";
 import { requireUser } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/rbac";
 import { PageHeader, SectionCard, Badge } from "@/components/ui";
@@ -9,6 +10,7 @@ import { Icon } from "@/components/icon";
 import { timeAgo, statusLabel } from "@/lib/format";
 import { getClientActivity } from "@/lib/client-portal";
 import { ResetPasswordForm } from "./reset-password-form";
+import { LinkProjectForm } from "./link-project-form";
 
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -39,9 +41,24 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
 
   const activity = await getClientActivity(id, 25);
 
+  const linkedProjects = await db.select({ id: projects.id, name: projects.name, status: projects.status }).from(projects).where(eq(projects.clientId, id));
+  const unlinkedProjects = await db.select({ id: projects.id, name: projects.name }).from(projects).where(isNull(projects.clientId));
+
   return (
     <div className="space-y-5">
-      <PageHeader title={client.name} subtitle={client.companyName ?? undefined} />
+      <PageHeader
+        title={client.name}
+        subtitle={client.companyName ?? undefined}
+        action={
+          <Link href={`/clients/${id}/payments`} className="btn btn-secondary">
+            <Icon name="chart" className="h-4 w-4" /> Payments
+          </Link>
+        }
+      />
+
+      <SectionCard title="Projects" action={<span className="text-xs text-muted">needed for payments & the client-visible vendor list</span>}>
+        <LinkProjectForm clientId={id} linked={linkedProjects} unlinkedProjects={unlinkedProjects} />
+      </SectionCard>
 
       <SectionCard title="Portal login">
         {login ? (

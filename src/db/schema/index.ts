@@ -14,6 +14,7 @@ export * from "./flags";
 export * from "./future-client";
 export * from "./future-commercial";
 export * from "./future-vendor";
+export * from "./client-payments";
 export * from "./chat";
 export * from "./storage-settings";
 export * from "./recruitment";
