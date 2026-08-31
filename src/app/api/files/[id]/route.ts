@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { getCurrentUser } from "@/lib/auth";
 import { getCurrentClient } from "@/lib/client-auth";
+import { getCurrentVendor } from "@/lib/vendor-auth";
+import { findVendorAccessibleVersion } from "@/lib/vendor-portal";
 import { getFileById, readStoredFile } from "@/lib/storage";
 import { db } from "@/db/client";
 import { documentVersions } from "@/db/schema";
@@ -82,6 +84,27 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       headers: {
         "Content-Type": file.mimeType,
         "Content-Disposition": `${canClientDownload ? "attachment" : "inline"}; filename="${encodeURIComponent(file.originalName)}"`,
+        "Cache-Control": "private, no-store",
+      },
+    });
+  }
+
+  // Not staff, not client — check for a vendor-portal session whose
+  // scope (assigned project x granted drawing category) covers this file.
+  const vendor = await getCurrentVendor();
+  if (vendor) {
+    const accessible = await findVendorAccessibleVersion(vendor.vendorId, id);
+    if (!accessible) return NextResponse.json({ error: "This file isn't in your assigned project/category." }, { status: 403 });
+
+    // Vendors download through this authenticated route only — never a
+    // raw storage URL (section 26) — but within their scope, download is
+    // allowed outright: they're trade professionals who need working
+    // drawings on-site, unlike the client portal's approval-gated flow.
+    const buffer = await readStoredFile(file.storageKey);
+    return new NextResponse(buffer as unknown as BodyInit, {
+      headers: {
+        "Content-Type": file.mimeType,
+        "Content-Disposition": `${wantsDownload ? "attachment" : "inline"}; filename="${encodeURIComponent(file.originalName)}"`,
         "Cache-Control": "private, no-store",
       },
     });

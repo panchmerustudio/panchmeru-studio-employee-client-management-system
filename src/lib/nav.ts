@@ -47,6 +47,7 @@ export function secondaryNavFor(role: RoleKey): NavItem[] {
     return [
       ...common,
       { href: "/clients", label: "Clients", icon: "users" },
+      { href: "/vendors", label: "Vendors", icon: "briefcase" },
       { href: "/reports", label: "Reports", icon: "chart" },
       { href: "/attendance/team", label: "Team Attendance", icon: "clock" },
       { href: "/audit", label: "Audit Log", icon: "shield" },

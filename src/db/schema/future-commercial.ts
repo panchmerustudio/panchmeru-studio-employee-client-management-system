@@ -108,10 +108,11 @@ export const expenses = pgTable("expenses", {
 export const vendors = pgTable("vendors", {
   id: idColumn(),
   name: text("name").notNull(),
-  category: text("category"),
+  category: text("category"), // trade, e.g. "Electrician" — see VENDOR_TRADE_CATEGORIES in app/(app)/vendors/actions.ts
   mobile: text("mobile"),
   email: text("email"),
   address: text("address"),
   rating: real("rating"),
+  status: text("status", { enum: ["active", "inactive"] }).notNull().default("active"),
   ...timestamps(),
 });

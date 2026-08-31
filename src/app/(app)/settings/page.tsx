@@ -18,7 +18,7 @@ import { DocumentCategories } from "./document-categories";
 // never actually wired to gate them (see feature-flags.ts), so rather than
 // leave a misleading "OFF" toggle next to a feature that's fully working,
 // they're excluded from that list and get their own section below instead.
-const NOW_ACTIVE_FLAG_KEYS = new Set(["CLIENT_MANAGEMENT", "CLIENT_PORTAL", "CLIENT_DRAWING_APPROVAL"]);
+const NOW_ACTIVE_FLAG_KEYS = new Set(["CLIENT_MANAGEMENT", "CLIENT_PORTAL", "CLIENT_DRAWING_APPROVAL", "VENDOR_MANAGEMENT"]);
 
 export default async function SettingsPage() {
   const user = await requirePermission(PERMISSIONS.SETTINGS_MANAGE).catch(() => null);
@@ -77,6 +77,18 @@ export default async function SettingsPage() {
         </p>
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Drawing categories</h3>
         <DocumentCategories categories={categories} />
+      </SectionCard>
+
+      <SectionCard title="Vendor Management" action={<span className="text-xs text-emerald-700">Active</span>}>
+        <p className="text-sm text-muted">
+          Vendors sign in at <code>/vendor</code> to view drawings for their trade, scoped to the project(s) they&apos;re assigned to and
+          the drawing category(ies) they&apos;ve been granted — never client info, other vendors, payments, or internal chat. Add vendors,
+          assign projects, and manage category access from{" "}
+          <Link href="/vendors" className="font-medium text-brand-ink underline">
+            Vendors
+          </Link>
+          .
+        </p>
       </SectionCard>
 
       <SectionCard title="Future modules" action={<span className="text-xs text-muted">Off by default</span>}>

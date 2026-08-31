@@ -50,6 +50,13 @@
       "when": 1788107176064,
       "tag": "0006_open_silhouette",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788192128435,
+      "tag": "0007_regular_patriot",
+      "breakpoints": true
     }
   ]
 }
