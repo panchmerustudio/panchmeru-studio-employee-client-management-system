@@ -17,9 +17,20 @@ import { cadModels, cadEntities, cadMissingInputs, projects } from "@/db/schema"
 import { requireUser, requirePermission } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
-import { registerUploadedFile, readStoredFile } from "@/lib/storage";
+import { registerUploadedFile, readStoredFile, createPresignedDownload } from "@/lib/storage";
+import { convertDwgToDxf } from "@/lib/cloudconvert";
 import { parseDxfFile, looksLikeDxf, type CadUnits } from "@/lib/dxf";
 import type { ClassificationResult, ClassifiedEntity } from "@/lib/dxf/classify";
+
+// Note on function duration: DWG uploads wait on a third-party conversion
+// (CloudConvert, see cloudconvert.ts) that can take up to a couple of
+// minutes. Next.js's "use server" files can only export async actions —
+// `maxDuration` can't be set here directly — so this relies on Vercel's
+// platform default (Fluid compute: 300s on Hobby, effectively fixed, not
+// configurable higher or lower) rather than an explicit override.
+// convertDwgToDxf() enforces its own ~4-minute timeout regardless, so a
+// slow conversion fails with a clear message well before Vercel would ever
+// kill the request outright.
 
 const FURNITURE_PLACEHOLDER_HEIGHT_MM = 750; // footprint-only mass (Phase 1 has no 3D furniture library yet) — never presented as a real furniture height
 
@@ -148,21 +159,40 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   const fileOriginalName = formData.get("fileOriginalName") as string | null;
   const units = (formData.get("units") as CadUnits | null) ?? "mm";
   const name = (formData.get("name") as string | null)?.trim() || fileOriginalName || "CAD import";
-  if (!fileKey || !fileOriginalName) throw new Error("Choose and upload a DXF file first.");
-  if (!fileOriginalName.toLowerCase().endsWith(".dxf")) throw new Error("Only DXF files are supported right now — export/save-as DXF from AutoCAD first.");
+  if (!fileKey || !fileOriginalName) throw new Error("Choose and upload a DXF or DWG file first.");
+  const lowerName = fileOriginalName.toLowerCase();
+  const isDwg = lowerName.endsWith(".dwg");
+  if (!lowerName.endsWith(".dxf") && !isDwg) throw new Error("Only DXF and DWG files are supported.");
 
   const savedFile = await registerUploadedFile({
     key: fileKey,
     originalName: fileOriginalName,
-    mimeType: "application/dxf",
+    mimeType: isDwg ? "application/dwg" : "application/dxf",
     kind: "drawing",
     uploadedBy: actor.id,
     relatedEntityType: "cad_model",
   });
 
-  const buffer = await readStoredFile(fileKey);
-  const text = buffer.toString("utf-8");
-  if (!looksLikeDxf(text)) throw new Error("This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG.");
+  let text: string;
+  if (isDwg) {
+    // DWG is Autodesk's proprietary binary format — convert to DXF via
+    // CloudConvert first (see src/lib/cloudconvert.ts), then parse exactly
+    // the same way a native DXF upload would be. A short-lived presigned
+    // GET URL lets CloudConvert fetch the file directly from R2 without the
+    // bucket ever being made public.
+    const sourceUrl = await createPresignedDownload(fileKey);
+    text = await convertDwgToDxf({ sourceUrl, filename: fileOriginalName });
+  } else {
+    const buffer = await readStoredFile(fileKey);
+    text = buffer.toString("utf-8");
+  }
+  if (!looksLikeDxf(text)) {
+    throw new Error(
+      isDwg
+        ? "The converted file doesn't look like a valid DXF drawing — this DWG may use an unsupported version or feature. Try exporting it as DXF directly from AutoCAD instead."
+        : "This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG."
+    );
+  }
 
   let result: ClassificationResult;
   let parseError: string | null = null;

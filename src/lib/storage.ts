@@ -187,6 +187,20 @@ export async function createPresignedUpload(opts: { mimeType: string; originalNa
 }
 
 /**
+ * Short-lived, read-only URL for an object already in R2 — for handing to
+ * a *trusted third-party service* (currently: CloudConvert, to fetch a DWG
+ * for conversion — see src/lib/cloudconvert.ts) that needs to read the file
+ * itself rather than going through this app. The bucket is otherwise never
+ * public (see the module doc above), so keep the expiry short and only
+ * call this for a specific, known integration — never expose the URL this
+ * returns directly to the browser.
+ */
+export async function createPresignedDownload(key: string, expiresInSeconds = 600) {
+  assertR2Configured();
+  return getSignedUrl(r2, new GetObjectCommand({ Bucket: BUCKET, Key: key }), { expiresIn: expiresInSeconds });
+}
+
+/**
  * Direct-to-R2 upload, part 2: once the browser's PUT to the presigned
  * URL above succeeds, call this (through a normal server action — it's a
  * tiny JSON payload, well under any body limit) to create the `files` row

@@ -18,6 +18,7 @@
     "@simplewebauthn/server": "^9.0.3",
     "@turf/turf": "^7.4.0",
     "bcryptjs": "^3.0.3",
+    "cloudconvert": "^2.3.7",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "drizzle-orm": "^0.45.2",
