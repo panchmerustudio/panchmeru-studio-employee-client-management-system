@@ -4,6 +4,8 @@ import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { submitTask, reviewTask, rescheduleTask, cancelTask } from "../actions";
 import { Icon } from "@/components/icon";
+import { uploadFileDirect } from "@/lib/upload-client";
+import { fileTooLarge, MAX_DIRECT_UPLOAD_BYTES, MAX_DIRECT_UPLOAD_LABEL } from "@/lib/upload-limits";
 
 export function SubmitWorkPanel({ taskId }: { taskId: string }) {
   const [note, setNote] = useState("");
@@ -13,12 +15,19 @@ export function SubmitWorkPanel({ taskId }: { taskId: string }) {
   const router = useRouter();
 
   function submit() {
-    const fd = new FormData();
-    fd.set("note", note);
-    const files = fileInput.current?.files;
-    if (files) Array.from(files).forEach((f) => fd.append("files", f));
+    const files = fileInput.current?.files ? Array.from(fileInput.current.files) : [];
+    const oversized = files.find((f) => fileTooLarge(f, MAX_DIRECT_UPLOAD_BYTES));
+    if (oversized) {
+      setError(`"${oversized.name}" is too large (max ${MAX_DIRECT_UPLOAD_LABEL}).`);
+      return;
+    }
+    setError(null);
     startTransition(async () => {
       try {
+        const uploaded = await Promise.all(files.map((f) => uploadFileDirect(f)));
+        const fd = new FormData();
+        fd.set("note", note);
+        fd.set("filesJson", JSON.stringify(uploaded));
         await submitTask(taskId, fd);
         router.refresh();
       } catch (err) {

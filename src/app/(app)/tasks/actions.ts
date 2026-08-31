@@ -9,7 +9,7 @@ import { requirePermission, requireUser } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { statusLabel } from "@/lib/format";
 import { PERMISSIONS } from "@/lib/rbac";
-import { saveFile } from "@/lib/storage";
+import { registerUploadedFile } from "@/lib/storage";
 import { saveVoiceNote } from "@/lib/voice";
 
 /** A task is still "open" if work on it hasn't finished or been called off — see the duplicate check in createTask. */
@@ -135,7 +135,9 @@ export async function addTaskComment(taskId: string, formData: FormData) {
   const actor = await requireUser();
   const type = String(formData.get("type") || "text") as "text" | "voice" | "photo" | "document";
   const text = formData.get("text") as string | null;
-  const file = formData.get("file") as File | null;
+  const fileKey = formData.get("fileKey") as string | null;
+  const fileMimeType = formData.get("fileMimeType") as string | null;
+  const fileOriginalName = formData.get("fileOriginalName") as string | null;
   const voiceFile = formData.get("voice") as File | null;
   const transcript = formData.get("transcript") as string | null;
   const durationRaw = formData.get("duration") as string | null;
@@ -146,12 +148,11 @@ export async function addTaskComment(taskId: string, formData: FormData) {
   if (type === "voice" && voiceFile && voiceFile.size > 0) {
     const note = await saveVoiceNote({ file: voiceFile, transcript, durationSeconds: durationRaw ? Number(durationRaw) : null, recordedBy: actor.id });
     voiceNoteId = note.id;
-  } else if ((type === "photo" || type === "document") && file && file.size > 0) {
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const saved = await saveFile({
-      buffer,
-      originalName: file.name,
-      mimeType: file.type || "application/octet-stream",
+  } else if ((type === "photo" || type === "document") && fileKey && fileMimeType && fileOriginalName) {
+    const saved = await registerUploadedFile({
+      key: fileKey,
+      originalName: fileOriginalName,
+      mimeType: fileMimeType,
       kind: type === "photo" ? "photo" : "document",
       uploadedBy: actor.id,
       relatedEntityType: "task",
@@ -180,7 +181,8 @@ export async function submitTask(taskId: string, formData: FormData) {
   if (!actor.employeeId) throw new Error("No employee profile linked to your account.");
 
   const note = formData.get("note") as string | null;
-  const files = formData.getAll("files") as File[];
+  const filesJson = formData.get("filesJson") as string | null;
+  const uploadedFiles: { key: string; mimeType: string; originalName: string }[] = filesJson ? JSON.parse(filesJson) : [];
 
   const priorSubmissions = await db.query.taskSubmissions.findMany({ where: eq(taskSubmissions.taskId, taskId) });
   const version = priorSubmissions.length + 1;
@@ -190,13 +192,11 @@ export async function submitTask(taskId: string, formData: FormData) {
     .values({ taskId, employeeId: actor.employeeId, version, note: note || null, status: "pending_review" })
     .returning();
 
-  for (const file of files) {
-    if (!file || file.size === 0) continue;
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const saved = await saveFile({
-      buffer,
-      originalName: file.name,
-      mimeType: file.type || "application/octet-stream",
+  for (const f of uploadedFiles) {
+    const saved = await registerUploadedFile({
+      key: f.key,
+      originalName: f.originalName,
+      mimeType: f.mimeType,
       kind: "document",
       uploadedBy: actor.id,
       relatedEntityType: "task_submission",

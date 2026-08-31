@@ -1,5 +1,6 @@
 import "server-only";
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
 import { db } from "@/db/client";
 import { files as filesTable } from "@/db/schema";
@@ -59,10 +60,17 @@ export const ALLOWED_MIME_TYPES = new Set([
 // Vercel hard-caps every Function's request body (Server Actions and API
 // routes alike) at 4.5MB on every plan, with no config to raise it. 4MB
 // here matches next.config.ts's serverActions.bodySizeLimit and leaves a
-// little headroom under Vercel's real ceiling. A file bigger than this
-// needs a direct-to-R2 presigned upload from the browser instead — this
-// buffer-in-the-request-body approach can't go higher on Vercel.
+// little headroom under Vercel's real ceiling. This only bounds `saveFile`
+// (the path where bytes travel through the app's own server) — uploads
+// that go through `createPresignedUpload`/`registerUploadedFile` below
+// bypass Vercel's server entirely and use MAX_DIRECT_UPLOAD_BYTES instead.
 export const MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024; // 4MB
+
+// The real ceiling for direct browser-to-R2 uploads (see below) — not
+// constrained by Vercel at all, so this is a product choice, not a
+// platform one. 50MB comfortably covers a large architectural PDF set or
+// a complex DXF; raise it if that's ever not enough.
+export const MAX_DIRECT_UPLOAD_BYTES = 50 * 1024 * 1024; // 50MB
 
 // Minimal magic-byte signature check (section 55: validate MIME + file signature).
 const SIGNATURES: { mime: string; bytes: number[] }[] = [
@@ -116,6 +124,83 @@ export async function saveFile(opts: {
       storageKey: key,
       mimeType: opts.mimeType,
       sizeBytes: opts.buffer.byteLength,
+      kind: opts.kind,
+      visibility: opts.visibility ?? "internal",
+      uploadedBy: opts.uploadedBy,
+      relatedEntityType: opts.relatedEntityType,
+      relatedEntityId: opts.relatedEntityId,
+    })
+    .returning();
+  return row;
+}
+
+/**
+ * Direct-to-R2 upload, part 1: hand the browser a short-lived, scoped URL
+ * it can PUT the file bytes to directly — the file never passes through
+ * this app's own server, so it isn't subject to Vercel's 4.5MB request
+ * body limit (see MAX_FILE_SIZE_BYTES above). Call this from a small,
+ * auth-checked API route (see /api/uploads/presign), not directly from
+ * client code — it needs the R2 credentials, which stay server-only.
+ */
+export async function createPresignedUpload(opts: { mimeType: string; originalName: string; sizeBytes: number }) {
+  if (!ALLOWED_MIME_TYPES.has(opts.mimeType)) {
+    throw new Error("This file type is not supported.");
+  }
+  if (opts.sizeBytes > MAX_DIRECT_UPLOAD_BYTES) {
+    throw new Error(`This file is too large (${Math.round(MAX_DIRECT_UPLOAD_BYTES / (1024 * 1024))}MB limit).`);
+  }
+  if (opts.sizeBytes <= 0) {
+    throw new Error("That file looks empty.");
+  }
+
+  const day = new Date().toISOString().slice(0, 10);
+  const key = `${day}/${randomUUID()}-${sanitizeFilename(opts.originalName)}`;
+  const uploadUrl = await getSignedUrl(r2, new PutObjectCommand({ Bucket: BUCKET, Key: key, ContentType: opts.mimeType }), { expiresIn: 300 });
+  return { uploadUrl, key };
+}
+
+/**
+ * Direct-to-R2 upload, part 2: once the browser's PUT to the presigned
+ * URL above succeeds, call this (through a normal server action — it's a
+ * tiny JSON payload, well under any body limit) to create the `files` row
+ * pointing at the object that's already sitting in R2. Re-checks the
+ * object actually exists and re-reads its real size/type from R2 with
+ * HeadObjectCommand rather than trusting whatever the client claims, so a
+ * caller can't register a row for an object that was never uploaded or
+ * lie about its size.
+ */
+export async function registerUploadedFile(opts: {
+  key: string;
+  originalName: string;
+  mimeType: string;
+  kind: "photo" | "document" | "voice" | "drawing" | "other";
+  visibility?: "internal" | "project_team" | "client_visible" | "approved";
+  uploadedBy?: string;
+  relatedEntityType?: string;
+  relatedEntityId?: string;
+}) {
+  if (!ALLOWED_MIME_TYPES.has(opts.mimeType)) {
+    throw new Error("This file type is not supported.");
+  }
+
+  let head;
+  try {
+    head = await r2.send(new HeadObjectCommand({ Bucket: BUCKET, Key: opts.key }));
+  } catch {
+    throw new Error("That upload didn't complete — please try again.");
+  }
+  const actualSize = head.ContentLength ?? 0;
+  if (actualSize <= 0 || actualSize > MAX_DIRECT_UPLOAD_BYTES) {
+    throw new Error("That upload didn't complete — please try again.");
+  }
+
+  const [row] = await db
+    .insert(filesTable)
+    .values({
+      originalName: opts.originalName,
+      storageKey: opts.key,
+      mimeType: opts.mimeType,
+      sizeBytes: actualSize,
       kind: opts.kind,
       visibility: opts.visibility ?? "internal",
       uploadedBy: opts.uploadedBy,

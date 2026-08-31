@@ -9,7 +9,7 @@ import { requireUser, requirePermission } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { formatDate } from "@/lib/format";
 import { PERMISSIONS } from "@/lib/rbac";
-import { saveFile } from "@/lib/storage";
+import { registerUploadedFile } from "@/lib/storage";
 import { countLeaveDays, computeApprovalSplit, dailyRate } from "@/lib/leave-policy";
 
 const schema = z.object({
@@ -53,10 +53,11 @@ export async function applyLeave(_prev: FormState, formData: FormData): Promise<
   }
 
   let attachmentFileId: string | undefined;
-  const file = formData.get("attachment") as File | null;
-  if (file && file.size > 0) {
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const saved = await saveFile({ buffer, originalName: file.name, mimeType: file.type || "application/octet-stream", kind: "document", uploadedBy: actor.id });
+  const fileKey = formData.get("attachmentKey") as string | null;
+  const fileMimeType = formData.get("attachmentMimeType") as string | null;
+  const fileOriginalName = formData.get("attachmentOriginalName") as string | null;
+  if (fileKey && fileMimeType && fileOriginalName) {
+    const saved = await registerUploadedFile({ key: fileKey, originalName: fileOriginalName, mimeType: fileMimeType, kind: "document", uploadedBy: actor.id });
     attachmentFileId = saved.id;
   }
 

@@ -8,7 +8,7 @@ import { users, employees, roles, employeeDocuments } from "@/db/schema";
 import { requirePermission, hashPassword } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
-import { saveFile } from "@/lib/storage";
+import { registerUploadedFile } from "@/lib/storage";
 
 const employeeSchema = z.object({
   name: z.string().min(2, "Enter the employee's full name."),
@@ -125,15 +125,16 @@ export async function updateEmployeeSalary(employeeId: string, monthlySalaryRaw:
 
 export async function uploadEmployeeDocument(employeeId: string, formData: FormData) {
   const actor = await requirePermission(PERMISSIONS.EMPLOYEE_MANAGE);
-  const file = formData.get("file") as File | null;
+  const fileKey = formData.get("fileKey") as string | null;
+  const fileMimeType = formData.get("fileMimeType") as string | null;
+  const fileOriginalName = formData.get("fileOriginalName") as string | null;
   const docType = String(formData.get("docType") || "other");
-  if (!file || file.size === 0) throw new Error("Choose a file to upload.");
+  if (!fileKey || !fileMimeType || !fileOriginalName) throw new Error("Choose and upload a file first.");
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const saved = await saveFile({
-    buffer,
-    originalName: file.name,
-    mimeType: file.type || "application/octet-stream",
+  const saved = await registerUploadedFile({
+    key: fileKey,
+    originalName: fileOriginalName,
+    mimeType: fileMimeType,
     kind: "document",
     visibility: "internal",
     uploadedBy: actor.id,
@@ -148,6 +149,6 @@ export async function uploadEmployeeDocument(employeeId: string, formData: FormD
     uploadedBy: actor.id,
   });
 
-  await recordAudit({ actor, action: "employee.document_uploaded", entityType: "employee", entityId: employeeId, newState: { docType, fileName: file.name } });
+  await recordAudit({ actor, action: "employee.document_uploaded", entityType: "employee", entityId: employeeId, newState: { docType, fileName: fileOriginalName } });
   revalidatePath(`/employees/${employeeId}`);
 }

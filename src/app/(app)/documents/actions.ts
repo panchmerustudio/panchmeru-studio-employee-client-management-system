@@ -8,7 +8,7 @@ import { documents, documentVersions } from "@/db/schema";
 import { requirePermission } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
-import { saveFile } from "@/lib/storage";
+import { registerUploadedFile } from "@/lib/storage";
 
 const schema = z.object({
   name: z.string().min(2, "Give the document a name."),
@@ -26,8 +26,10 @@ export async function createDocument(_prev: FormState, formData: FormData): Prom
 
   const parsed = schema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
-  const file = formData.get("file") as File | null;
-  if (!file || file.size === 0) return { error: "Choose a file to upload." };
+  const fileKey = formData.get("fileKey") as string | null;
+  const fileMimeType = formData.get("fileMimeType") as string | null;
+  const fileOriginalName = formData.get("fileOriginalName") as string | null;
+  if (!fileKey || !fileMimeType || !fileOriginalName) return { error: "Choose and upload a file first." };
 
   const data = parsed.data;
   const [doc] = await db
@@ -42,11 +44,10 @@ export async function createDocument(_prev: FormState, formData: FormData): Prom
     })
     .returning();
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const saved = await saveFile({
-    buffer,
-    originalName: file.name,
-    mimeType: file.type || "application/octet-stream",
+  const saved = await registerUploadedFile({
+    key: fileKey,
+    originalName: fileOriginalName,
+    mimeType: fileMimeType,
     kind: "drawing",
     visibility: "internal",
     uploadedBy: actor.id,
@@ -63,18 +64,19 @@ export async function createDocument(_prev: FormState, formData: FormData): Prom
 
 export async function uploadNewVersion(documentId: string, formData: FormData) {
   const actor = await requirePermission(PERMISSIONS.DOCUMENT_UPLOAD);
-  const file = formData.get("file") as File | null;
+  const fileKey = formData.get("fileKey") as string | null;
+  const fileMimeType = formData.get("fileMimeType") as string | null;
+  const fileOriginalName = formData.get("fileOriginalName") as string | null;
   const changeNote = formData.get("changeNote") as string | null;
-  if (!file || file.size === 0) throw new Error("Choose a file to upload.");
+  if (!fileKey || !fileMimeType || !fileOriginalName) throw new Error("Choose and upload a file first.");
 
   const latest = await db.query.documentVersions.findFirst({ where: eq(documentVersions.documentId, documentId), orderBy: (v, { desc: d }) => d(v.versionNumber) });
   const nextVersion = (latest?.versionNumber ?? 0) + 1;
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const saved = await saveFile({
-    buffer,
-    originalName: file.name,
-    mimeType: file.type || "application/octet-stream",
+  const saved = await registerUploadedFile({
+    key: fileKey,
+    originalName: fileOriginalName,
+    mimeType: fileMimeType,
     kind: "drawing",
     visibility: "internal",
     uploadedBy: actor.id,

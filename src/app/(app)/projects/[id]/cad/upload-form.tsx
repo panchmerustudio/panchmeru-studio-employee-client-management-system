@@ -4,7 +4,8 @@ import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { uploadCadModel } from "./actions";
 import { Icon } from "@/components/icon";
-import { fileTooLarge, MAX_UPLOAD_LABEL } from "@/lib/upload-limits";
+import { fileTooLarge, MAX_DIRECT_UPLOAD_BYTES, MAX_DIRECT_UPLOAD_LABEL } from "@/lib/upload-limits";
+import { uploadFileDirect } from "@/lib/upload-client";
 
 const UNITS = [
   { key: "mm", label: "Millimeters (mm)" },
@@ -29,17 +30,21 @@ export function UploadForm({ projectId }: { projectId: string }) {
       setError("Choose a DXF file.");
       return;
     }
-    if (fileTooLarge(file)) {
-      setError(`This file is too large (max ${MAX_UPLOAD_LABEL}) — Vercel rejects bigger uploads outright.`);
+    if (fileTooLarge(file, MAX_DIRECT_UPLOAD_BYTES)) {
+      setError(`This file is too large (max ${MAX_DIRECT_UPLOAD_LABEL}).`);
       return;
     }
     setError(null);
-    const fd = new FormData();
-    fd.set("file", file);
-    fd.set("units", units);
-    if (name.trim()) fd.set("name", name.trim());
     startTransition(async () => {
       try {
+        // DXF isn't a MIME type most browsers recognize, so file.type is
+        // often "" or generic — force the real type explicitly.
+        const uploaded = await uploadFileDirect(file, "/api/uploads/presign", "application/dxf");
+        const fd = new FormData();
+        fd.set("fileKey", uploaded.key);
+        fd.set("fileOriginalName", uploaded.originalName);
+        fd.set("units", units);
+        if (name.trim()) fd.set("name", name.trim());
         const model = await uploadCadModel(projectId, fd);
         router.push(`/projects/${projectId}/cad/${model.id}`);
       } catch (err) {
@@ -57,7 +62,7 @@ export function UploadForm({ projectId }: { projectId: string }) {
       <div>
         <label className="mb-1.5 block text-sm font-medium">DXF file</label>
         <input ref={fileInput} type="file" accept=".dxf" className="input" />
-        <p className="mt-1 text-xs text-muted">Up to {MAX_UPLOAD_LABEL}. A large/complex drawing may need to be simplified or split by floor first.</p>
+        <p className="mt-1 text-xs text-muted">Up to {MAX_DIRECT_UPLOAD_LABEL}. A large/complex drawing may need to be simplified or split by floor first.</p>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>

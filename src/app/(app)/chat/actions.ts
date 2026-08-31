@@ -7,7 +7,7 @@ import { chatParticipants, chatMessages, files as filesTable, notifications, voi
 import { hasPermission, requireUser } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
-import { deleteStoredFile, saveFile } from "@/lib/storage";
+import { deleteStoredFile, registerUploadedFile } from "@/lib/storage";
 import { saveVoiceNote } from "@/lib/voice";
 import { getOrCreateTeamConversation, getOrCreateDm } from "@/lib/chat";
 
@@ -36,7 +36,9 @@ export async function sendMessage(conversationId: string, formData: FormData) {
 
   const type = String(formData.get("type") || "text") as "text" | "voice" | "photo" | "document";
   const text = formData.get("text") as string | null;
-  const file = formData.get("file") as File | null;
+  const fileKey = formData.get("fileKey") as string | null;
+  const fileMimeType = formData.get("fileMimeType") as string | null;
+  const fileOriginalName = formData.get("fileOriginalName") as string | null;
   const voiceFile = formData.get("voice") as File | null;
   const transcript = formData.get("transcript") as string | null;
   const durationRaw = formData.get("duration") as string | null;
@@ -47,12 +49,11 @@ export async function sendMessage(conversationId: string, formData: FormData) {
   if (type === "voice" && voiceFile && voiceFile.size > 0) {
     const note = await saveVoiceNote({ file: voiceFile, transcript, durationSeconds: durationRaw ? Number(durationRaw) : null, recordedBy: actor.id });
     voiceNoteId = note.id;
-  } else if ((type === "photo" || type === "document") && file && file.size > 0) {
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const saved = await saveFile({
-      buffer,
-      originalName: file.name,
-      mimeType: file.type || "application/octet-stream",
+  } else if ((type === "photo" || type === "document") && fileKey && fileMimeType && fileOriginalName) {
+    const saved = await registerUploadedFile({
+      key: fileKey,
+      originalName: fileOriginalName,
+      mimeType: fileMimeType,
       kind: type === "photo" ? "photo" : "document",
       uploadedBy: actor.id,
       relatedEntityType: "chat_conversation",

@@ -3,7 +3,8 @@
 import { useActionState, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createDocument, type FormState } from "../actions";
-import { fileTooLarge, MAX_UPLOAD_LABEL } from "@/lib/upload-limits";
+import { fileTooLarge, MAX_DIRECT_UPLOAD_BYTES, MAX_DIRECT_UPLOAD_LABEL } from "@/lib/upload-limits";
+import { uploadFileDirect } from "@/lib/upload-client";
 
 const initialState: FormState = {};
 
@@ -18,24 +19,43 @@ export function NewDocumentForm({
 }) {
   const router = useRouter();
   const [clientError, setClientError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [state, formAction, pending] = useActionState(async (prev: FormState, fd: FormData) => {
     const result = await createDocument(prev, fd);
     if (result.ok && result.documentId) router.push(`/documents/${result.documentId}`);
     return result;
   }, initialState);
 
-  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
-    const file = (new FormData(e.currentTarget).get("file") as File | null) ?? undefined;
-    if (file && file.size > 0 && fileTooLarge(file)) {
-      e.preventDefault();
-      setClientError(`This file is too large (max ${MAX_UPLOAD_LABEL}).`);
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setClientError(null);
+    const fd = new FormData(e.currentTarget);
+    const file = fd.get("file") as File | null;
+    if (!file || file.size === 0) {
+      setClientError("Choose a file to upload.");
       return;
     }
-    setClientError(null);
+    if (fileTooLarge(file, MAX_DIRECT_UPLOAD_BYTES)) {
+      setClientError(`This file is too large (max ${MAX_DIRECT_UPLOAD_LABEL}).`);
+      return;
+    }
+    setUploading(true);
+    try {
+      const uploaded = await uploadFileDirect(file);
+      fd.delete("file");
+      fd.set("fileKey", uploaded.key);
+      fd.set("fileMimeType", uploaded.mimeType);
+      fd.set("fileOriginalName", uploaded.originalName);
+      formAction(fd);
+    } catch (err) {
+      setClientError(err instanceof Error ? err.message : "Couldn't upload this file.");
+    } finally {
+      setUploading(false);
+    }
   }
 
   return (
-    <form action={formAction} onSubmit={onSubmit} className="card space-y-4 p-5">
+    <form onSubmit={onSubmit} className="card space-y-4 p-5">
       <div>
         <label className="mb-1.5 block text-sm font-medium">Name</label>
         <input className="input" name="name" required placeholder="Kitchen Layout" />
@@ -76,15 +96,15 @@ export function NewDocumentForm({
       <div>
         <label className="mb-1.5 block text-sm font-medium">File</label>
         <input className="w-full text-xs" type="file" name="file" required />
-        <p className="mt-1 text-[11px] text-muted">Up to {MAX_UPLOAD_LABEL}.</p>
+        <p className="mt-1 text-[11px] text-muted">Up to {MAX_DIRECT_UPLOAD_LABEL}.</p>
       </div>
       {(clientError || state.error) && (
         <div role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
           {clientError || state.error}
         </div>
       )}
-      <button type="submit" disabled={pending} className="btn btn-accent w-full">
-        {pending ? "Uploading…" : "Upload"}
+      <button type="submit" disabled={pending || uploading} className="btn btn-accent w-full">
+        {uploading ? "Uploading…" : pending ? "Saving…" : "Upload"}
       </button>
     </form>
   );

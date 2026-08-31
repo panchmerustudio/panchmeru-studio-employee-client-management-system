@@ -4,7 +4,7 @@ import { z } from "zod";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
 import { jobApplications, notifications, roles, users } from "@/db/schema";
-import { saveFile } from "@/lib/storage";
+import { registerUploadedFile } from "@/lib/storage";
 
 const schema = z.object({
   fullName: z.string().min(2, "Enter your full name."),
@@ -29,29 +29,31 @@ export async function submitJobApplication(_prev: FormState, formData: FormData)
 
   if (data.hp_confirm) return { ok: true };
 
-  const resumeFile = formData.get("resume") as File | null;
-  if (!resumeFile || resumeFile.size === 0) return { error: "Please attach your resume/CV." };
+  const resumeKey = formData.get("resumeFileKey") as string | null;
+  const resumeMimeType = formData.get("resumeFileMimeType") as string | null;
+  const resumeOriginalName = formData.get("resumeFileOriginalName") as string | null;
+  if (!resumeKey || !resumeMimeType || !resumeOriginalName) return { error: "Please attach your resume/CV." };
 
   let resumeFileId: string;
   let portfolioFileId: string | undefined;
   try {
-    const resumeBuffer = Buffer.from(await resumeFile.arrayBuffer());
-    const savedResume = await saveFile({
-      buffer: resumeBuffer,
-      originalName: resumeFile.name,
-      mimeType: resumeFile.type || "application/octet-stream",
+    const savedResume = await registerUploadedFile({
+      key: resumeKey,
+      originalName: resumeOriginalName,
+      mimeType: resumeMimeType,
       kind: "document",
       relatedEntityType: "job_application",
     });
     resumeFileId = savedResume.id;
 
-    const portfolioFile = formData.get("portfolioFile") as File | null;
-    if (portfolioFile && portfolioFile.size > 0) {
-      const portfolioBuffer = Buffer.from(await portfolioFile.arrayBuffer());
-      const savedPortfolio = await saveFile({
-        buffer: portfolioBuffer,
-        originalName: portfolioFile.name,
-        mimeType: portfolioFile.type || "application/octet-stream",
+    const portfolioKey = formData.get("portfolioFileKey") as string | null;
+    const portfolioMimeType = formData.get("portfolioFileMimeType") as string | null;
+    const portfolioOriginalName = formData.get("portfolioFileOriginalName") as string | null;
+    if (portfolioKey && portfolioMimeType && portfolioOriginalName) {
+      const savedPortfolio = await registerUploadedFile({
+        key: portfolioKey,
+        originalName: portfolioOriginalName,
+        mimeType: portfolioMimeType,
         kind: "document",
         relatedEntityType: "job_application",
       });

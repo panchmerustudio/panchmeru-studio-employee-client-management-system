@@ -8,6 +8,8 @@ import { getCurrentPosition } from "@/lib/use-geolocation";
 import { reverseGeocode } from "@/lib/reverse-geocode";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { Icon } from "@/components/icon";
+import { uploadFileDirect } from "@/lib/upload-client";
+import { fileTooLarge, MAX_DIRECT_UPLOAD_BYTES, MAX_DIRECT_UPLOAD_LABEL } from "@/lib/upload-limits";
 
 const TRACK_INTERVAL_MS = 45000;
 
@@ -44,14 +46,19 @@ export function ActiveVisit({ siteId, siteVisitId, siteName, hasBiometric, start
   async function uploadPhoto() {
     const file = fileInput.current?.files?.[0];
     if (!file) return;
+    if (fileTooLarge(file, MAX_DIRECT_UPLOAD_BYTES)) {
+      setPhotoMsg(`This photo is too large (max ${MAX_DIRECT_UPLOAD_LABEL}).`);
+      return;
+    }
     setPhotoBusy(true);
     setPhotoMsg(null);
     try {
-      const fd = new FormData();
-      fd.set("siteId", siteId);
-      fd.set("siteVisitId", siteVisitId);
-      fd.set("file", file);
-      const res = await fetch("/api/sites/photos", { method: "POST", body: fd });
+      const uploaded = await uploadFileDirect(file);
+      const res = await fetch("/api/sites/photos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteId, siteVisitId, fileKey: uploaded.key, fileMimeType: uploaded.mimeType, fileOriginalName: uploaded.originalName }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setPhotoMsg("Photo added.");

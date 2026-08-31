@@ -1,12 +1,62 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useRef, useState } from "react";
 import { submitJobApplication, type FormState } from "./actions";
+import { uploadFileDirect } from "@/lib/upload-client";
+import { fileTooLarge, MAX_PUBLIC_UPLOAD_BYTES, MAX_PUBLIC_UPLOAD_LABEL } from "@/lib/upload-limits";
 
 const initialState: FormState = {};
 
 export function ApplyForm() {
   const [state, formAction, pending] = useActionState(submitJobApplication, initialState);
+  const [uploading, setUploading] = useState(false);
+  const [clientError, setClientError] = useState<string | null>(null);
+  const resumeInput = useRef<HTMLInputElement>(null);
+  const portfolioInput = useRef<HTMLInputElement>(null);
+
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setClientError(null);
+
+    const resumeFile = resumeInput.current?.files?.[0];
+    if (!resumeFile) {
+      setClientError("Please attach your resume/CV.");
+      return;
+    }
+    if (fileTooLarge(resumeFile, MAX_PUBLIC_UPLOAD_BYTES)) {
+      setClientError(`Your resume is too large (max ${MAX_PUBLIC_UPLOAD_LABEL}).`);
+      return;
+    }
+    const portfolioFile = portfolioInput.current?.files?.[0];
+    if (portfolioFile && fileTooLarge(portfolioFile, MAX_PUBLIC_UPLOAD_BYTES)) {
+      setClientError(`Your portfolio file is too large (max ${MAX_PUBLIC_UPLOAD_LABEL}).`);
+      return;
+    }
+
+    const fd = new FormData(e.currentTarget);
+    setUploading(true);
+    try {
+      const uploadedResume = await uploadFileDirect(resumeFile, "/api/uploads/presign-public");
+      fd.set("resumeFileKey", uploadedResume.key);
+      fd.set("resumeFileMimeType", uploadedResume.mimeType);
+      fd.set("resumeFileOriginalName", uploadedResume.originalName);
+
+      if (portfolioFile) {
+        const uploadedPortfolio = await uploadFileDirect(portfolioFile, "/api/uploads/presign-public");
+        fd.set("portfolioFileKey", uploadedPortfolio.key);
+        fd.set("portfolioFileMimeType", uploadedPortfolio.mimeType);
+        fd.set("portfolioFileOriginalName", uploadedPortfolio.originalName);
+      }
+
+      fd.delete("resume");
+      fd.delete("portfolioFile");
+      formAction(fd);
+    } catch (err) {
+      setClientError(err instanceof Error ? err.message : "Couldn't upload your file. Please check its type/size and try again.");
+    } finally {
+      setUploading(false);
+    }
+  }
 
   if (state.ok) {
     return (
@@ -18,7 +68,7 @@ export function ApplyForm() {
   }
 
   return (
-    <form action={formAction} className="card space-y-4 p-6 shadow-sm">
+    <form onSubmit={onSubmit} className="card space-y-4 p-6 shadow-sm">
       {/* Honeypot — hidden from real visitors, left for bots that fill every field. */}
       <div className="absolute -left-[9999px]" aria-hidden="true">
         <label htmlFor="hp_confirm">Leave this field blank</label>
@@ -60,24 +110,24 @@ export function ApplyForm() {
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <label className="mb-1.5 block text-sm font-medium">Resume / CV</label>
-          <input className="w-full text-xs" type="file" name="resume" accept=".pdf,.doc,.docx" required />
-          <p className="mt-1 text-[11px] text-muted">PDF or Word, up to 4MB.</p>
+          <input ref={resumeInput} className="w-full text-xs" type="file" name="resume" accept=".pdf,.doc,.docx" required />
+          <p className="mt-1 text-[11px] text-muted">PDF or Word, up to {MAX_PUBLIC_UPLOAD_LABEL}.</p>
         </div>
         <div>
           <label className="mb-1.5 block text-sm font-medium">Portfolio file (optional)</label>
-          <input className="w-full text-xs" type="file" name="portfolioFile" accept=".pdf,.doc,.docx,image/*" />
+          <input ref={portfolioInput} className="w-full text-xs" type="file" name="portfolioFile" accept=".pdf,.doc,.docx,image/*" />
           <p className="mt-1 text-[11px] text-muted">If you don't have an online link above.</p>
         </div>
       </div>
 
-      {state.error && (
+      {(clientError || state.error) && (
         <div role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-          {state.error}
+          {clientError || state.error}
         </div>
       )}
 
-      <button type="submit" disabled={pending} className="btn btn-accent w-full">
-        {pending ? "Submitting…" : "Submit application"}
+      <button type="submit" disabled={pending || uploading} className="btn btn-accent w-full">
+        {uploading ? "Uploading…" : pending ? "Submitting…" : "Submit application"}
       </button>
     </form>
   );

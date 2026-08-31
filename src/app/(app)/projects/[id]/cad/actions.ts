@@ -17,7 +17,7 @@ import { cadModels, cadEntities, cadMissingInputs, projects } from "@/db/schema"
 import { requireUser, requirePermission } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
-import { saveFile } from "@/lib/storage";
+import { registerUploadedFile, readStoredFile } from "@/lib/storage";
 import { parseDxfFile, looksLikeDxf, type CadUnits } from "@/lib/dxf";
 import type { ClassificationResult, ClassifiedEntity } from "@/lib/dxf/classify";
 
@@ -144,24 +144,25 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
   if (!project) throw new Error("Project not found.");
 
-  const file = formData.get("file") as File | null;
+  const fileKey = formData.get("fileKey") as string | null;
+  const fileOriginalName = formData.get("fileOriginalName") as string | null;
   const units = (formData.get("units") as CadUnits | null) ?? "mm";
-  const name = (formData.get("name") as string | null)?.trim() || file?.name || "CAD import";
-  if (!file || file.size === 0) throw new Error("Choose a DXF file to upload.");
-  if (!file.name.toLowerCase().endsWith(".dxf")) throw new Error("Only DXF files are supported right now — export/save-as DXF from AutoCAD first.");
+  const name = (formData.get("name") as string | null)?.trim() || fileOriginalName || "CAD import";
+  if (!fileKey || !fileOriginalName) throw new Error("Choose and upload a DXF file first.");
+  if (!fileOriginalName.toLowerCase().endsWith(".dxf")) throw new Error("Only DXF files are supported right now — export/save-as DXF from AutoCAD first.");
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const text = buffer.toString("utf-8");
-  if (!looksLikeDxf(text)) throw new Error("This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG.");
-
-  const savedFile = await saveFile({
-    buffer,
-    originalName: file.name,
+  const savedFile = await registerUploadedFile({
+    key: fileKey,
+    originalName: fileOriginalName,
     mimeType: "application/dxf",
     kind: "drawing",
     uploadedBy: actor.id,
     relatedEntityType: "cad_model",
   });
+
+  const buffer = await readStoredFile(fileKey);
+  const text = buffer.toString("utf-8");
+  if (!looksLikeDxf(text)) throw new Error("This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG.");
 
   let result: ClassificationResult;
   let parseError: string | null = null;

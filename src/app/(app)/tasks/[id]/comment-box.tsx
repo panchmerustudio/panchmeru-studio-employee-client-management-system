@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { addTaskComment } from "../actions";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { Icon } from "@/components/icon";
+import { uploadFileDirect } from "@/lib/upload-client";
+import { fileTooLarge, MAX_DIRECT_UPLOAD_BYTES, MAX_DIRECT_UPLOAD_LABEL } from "@/lib/upload-limits";
 
 export function CommentBox({ taskId }: { taskId: string }) {
   const [tab, setTab] = useState<"text" | "photo" | "document" | "voice">("text");
@@ -34,11 +36,19 @@ export function CommentBox({ taskId }: { taskId: string }) {
   function submitFile(type: "photo" | "document") {
     const file = fileInput.current?.files?.[0];
     if (!file) return;
-    const fd = new FormData();
-    fd.set("type", type);
-    fd.set("file", file);
+    if (fileTooLarge(file, MAX_DIRECT_UPLOAD_BYTES)) {
+      setError(`This file is too large (max ${MAX_DIRECT_UPLOAD_LABEL}).`);
+      return;
+    }
+    setError(null);
     startTransition(async () => {
       try {
+        const uploaded = await uploadFileDirect(file);
+        const fd = new FormData();
+        fd.set("type", type);
+        fd.set("fileKey", uploaded.key);
+        fd.set("fileMimeType", uploaded.mimeType);
+        fd.set("fileOriginalName", uploaded.originalName);
         await addTaskComment(taskId, fd);
         if (fileInput.current) fileInput.current.value = "";
         router.refresh();

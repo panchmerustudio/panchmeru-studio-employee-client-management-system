@@ -8,11 +8,9 @@ import { PageHeader, SectionCard, Badge } from "@/components/ui";
 import { formatDate } from "@/lib/format";
 import { StatusButtons } from "./status-buttons";
 import { SalaryForm } from "./salary-form";
-import { uploadEmployeeDocument } from "../actions";
+import { DocumentUploadForm } from "./document-upload-form";
 import { Icon } from "@/components/icon";
 import { getAllBalances } from "@/lib/leave-policy";
-
-const DOC_TYPES = ["identity", "pan", "resume", "qualification", "experience", "bank_details", "joining_document", "other"];
 
 export default async function EmployeeDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -54,7 +52,6 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
     .where(eq(siteAssignments.employeeId, id));
 
   const canManage = viewer.permissions.includes(PERMISSIONS.EMPLOYEE_MANAGE);
-  const uploadAction = uploadEmployeeDocument.bind(null, id);
   const balances = canManage ? await getAllBalances(id, new Date().getFullYear()) : [];
 
   return (
@@ -113,17 +110,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
                 ))}
               </ul>
             )}
-            {canManage && (
-              <form action={uploadAction} className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-                <select name="docType" className="input w-auto flex-1 min-w-[140px]">
-                  {DOC_TYPES.map((t) => (
-                    <option key={t} value={t}>{t.replace("_", " ")}</option>
-                  ))}
-                </select>
-                <input type="file" name="file" required className="flex-1 min-w-[160px] text-xs" />
-                <button type="submit" className="btn btn-secondary">Upload</button>
-              </form>
-            )}
+            {canManage && <DocumentUploadForm employeeId={id} />}
           </SectionCard>
         </div>
 
