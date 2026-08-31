@@ -35,6 +35,24 @@ const r2 = new S3Client({
 });
 const BUCKET = process.env.R2_BUCKET_NAME ?? "";
 
+// Fail loudly and clearly if R2 isn't configured, instead of letting the
+// AWS SDK throw its own cryptic error ("No value provided for input HTTP
+// label: Bucket.") deep inside a PutObjectCommand/HeadObjectCommand call.
+// Every exported function below that talks to R2 calls this first.
+function assertR2Configured() {
+  const missing = [
+    !process.env.R2_ACCOUNT_ID && "R2_ACCOUNT_ID",
+    !process.env.R2_ACCESS_KEY_ID && "R2_ACCESS_KEY_ID",
+    !process.env.R2_SECRET_ACCESS_KEY && "R2_SECRET_ACCESS_KEY",
+    !process.env.R2_BUCKET_NAME && "R2_BUCKET_NAME",
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    throw new Error(
+      `File storage isn't configured on the server (missing: ${missing.join(", ")}). Set these in Vercel → Settings → Environment Variables, then redeploy — adding/editing env vars doesn't affect deployments already running.`
+    );
+  }
+}
+
 export const ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -96,6 +114,7 @@ export async function saveFile(opts: {
   relatedEntityType?: string;
   relatedEntityId?: string;
 }) {
+  assertR2Configured();
   if (!ALLOWED_MIME_TYPES.has(opts.mimeType)) {
     throw new Error("This file type is not supported.");
   }
@@ -143,6 +162,7 @@ export async function saveFile(opts: {
  * client code — it needs the R2 credentials, which stay server-only.
  */
 export async function createPresignedUpload(opts: { mimeType: string; originalName: string; sizeBytes: number }) {
+  assertR2Configured();
   if (!ALLOWED_MIME_TYPES.has(opts.mimeType)) {
     throw new Error("This file type is not supported.");
   }
@@ -179,6 +199,7 @@ export async function registerUploadedFile(opts: {
   relatedEntityType?: string;
   relatedEntityId?: string;
 }) {
+  assertR2Configured();
   if (!ALLOWED_MIME_TYPES.has(opts.mimeType)) {
     throw new Error("This file type is not supported.");
   }
@@ -212,6 +233,7 @@ export async function registerUploadedFile(opts: {
 }
 
 export async function readStoredFile(storageKey: string) {
+  assertR2Configured();
   const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: storageKey }));
   const bytes = await res.Body?.transformToByteArray();
   if (!bytes) throw new Error("Could not read stored file.");
@@ -219,6 +241,7 @@ export async function readStoredFile(storageKey: string) {
 }
 
 export async function deleteStoredFile(storageKey: string) {
+  assertR2Configured();
   await r2.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: storageKey }));
 }
 
