@@ -55,7 +55,14 @@ export const ALLOWED_MIME_TYPES = new Set([
   "audio/ogg",
 ]);
 
-export const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25MB
+// Was 25MB, which never actually worked once this app moved to Vercel:
+// Vercel hard-caps every Function's request body (Server Actions and API
+// routes alike) at 4.5MB on every plan, with no config to raise it. 4MB
+// here matches next.config.ts's serverActions.bodySizeLimit and leaves a
+// little headroom under Vercel's real ceiling. A file bigger than this
+// needs a direct-to-R2 presigned upload from the browser instead — this
+// buffer-in-the-request-body approach can't go higher on Vercel.
+export const MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024; // 4MB
 
 // Minimal magic-byte signature check (section 55: validate MIME + file signature).
 const SIGNATURES: { mime: string; bytes: number[] }[] = [
@@ -85,7 +92,7 @@ export async function saveFile(opts: {
     throw new Error("This file type is not supported.");
   }
   if (opts.buffer.byteLength > MAX_FILE_SIZE_BYTES) {
-    throw new Error("This file is too large (25MB limit).");
+    throw new Error("This file is too large (4MB limit).");
   }
   if (!looksLikeDeclaredType(opts.buffer, opts.mimeType)) {
     throw new Error("This file's contents don't match its declared type.");

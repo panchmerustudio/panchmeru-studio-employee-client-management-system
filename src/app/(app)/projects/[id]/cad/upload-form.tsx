@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { uploadCadModel } from "./actions";
 import { Icon } from "@/components/icon";
+import { fileTooLarge, MAX_UPLOAD_LABEL } from "@/lib/upload-limits";
 
 const UNITS = [
   { key: "mm", label: "Millimeters (mm)" },
@@ -26,6 +27,10 @@ export function UploadForm({ projectId }: { projectId: string }) {
     const file = fileInput.current?.files?.[0];
     if (!file) {
       setError("Choose a DXF file.");
+      return;
+    }
+    if (fileTooLarge(file)) {
+      setError(`This file is too large (max ${MAX_UPLOAD_LABEL}) — Vercel rejects bigger uploads outright.`);
       return;
     }
     setError(null);
@@ -52,6 +57,7 @@ export function UploadForm({ projectId }: { projectId: string }) {
       <div>
         <label className="mb-1.5 block text-sm font-medium">DXF file</label>
         <input ref={fileInput} type="file" accept=".dxf" className="input" />
+        <p className="mt-1 text-xs text-muted">Up to {MAX_UPLOAD_LABEL}. A large/complex drawing may need to be simplified or split by floor first.</p>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>

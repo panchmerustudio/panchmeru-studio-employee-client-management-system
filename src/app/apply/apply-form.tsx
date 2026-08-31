@@ -61,7 +61,7 @@ export function ApplyForm() {
         <div>
           <label className="mb-1.5 block text-sm font-medium">Resume / CV</label>
           <input className="w-full text-xs" type="file" name="resume" accept=".pdf,.doc,.docx" required />
-          <p className="mt-1 text-[11px] text-muted">PDF or Word, up to 25MB.</p>
+          <p className="mt-1 text-[11px] text-muted">PDF or Word, up to 4MB.</p>
         </div>
         <div>
           <label className="mb-1.5 block text-sm font-medium">Portfolio file (optional)</label>
