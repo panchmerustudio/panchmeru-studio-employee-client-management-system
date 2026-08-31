@@ -35,7 +35,7 @@ export function primaryNavFor(role: RoleKey): NavItem[] {
 /** Everything else, reachable from "More" (mobile) or the sidebar (wide screens). */
 export function secondaryNavFor(role: RoleKey): NavItem[] {
   const common: NavItem[] = [
-    { href: "/projects", label: "Projects", icon: "folder" }, // view-only for non-managers; supervisors reach the 3D Modeler through here
+    { href: "/projects", label: "Projects", icon: "folder" }, // view-only for non-managers; supervisors and employees reach the CAD 3D Modeler through here (see PERMISSIONS.CAD_CREATE)
     { href: "/chat", label: "Chat", icon: "message" },
     { href: "/leave", label: "Leave", icon: "calendar" },
     { href: "/documents", label: "Documents", icon: "file" },
