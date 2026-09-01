@@ -18,6 +18,17 @@ const entities: CadEntityInput[] = [
   { id: "c1", type: "column", layerName: "A-COL", geometry: { position: { x: 4200, y: 3600 } }, widthMm: 300, depthMm: 300, heightMm: wallHeight, rotationDeg: 0 },
   // A room.
   { id: "r1", type: "room", layerName: "A-AREA", label: "Living Room", geometry: { points: [{ x: 115, y: 115 }, { x: 4085, y: 115 }, { x: 4085, y: 3485 }, { x: 115, y: 3485 }] } },
+  // A DIAGONAL wall (45°, thin — 150mm thick, 3182mm long): this is the
+  // regression case for the CAD<->3D "length/thickness swapped" bug. The
+  // old validation measured a rotated wall's world-space AABB and picked
+  // whichever axis was bigger as "length" — for any non-axis-aligned wall
+  // that's a real distortion, not just floating-point noise, so this case
+  // would previously fail even though the geometry was built correctly.
+  { id: "w3", type: "wall", layerName: "A-WALL", geometry: { start: { x: 0, y: 0 }, end: { x: 2250, y: 2250 } }, depthMm: 150, heightMm: wallHeight },
+  // Furniture, placed at an angle — exercises buildFurniture()'s kind
+  // matching (from the block label) and confirms a rotated piece still
+  // reports its true CAD width/depth rather than a rotated-AABB guess.
+  { id: "f1", type: "furniture", layerName: "A-FURN", label: "SOFA_2S", geometry: { position: { x: 1000, y: 500 } }, widthMm: 1800, depthMm: 850, heightMm: 800, rotationDeg: 35 },
 ];
 
 const { group, validation } = buildScene(entities, { windowSillMm: 900 });

@@ -47,6 +47,87 @@ function toThree(x: number, y: number, z = 0) {
 
 type Pt = { x: number; y: number };
 
+/*
+  ---- Procedural wall material ----
+  This module also runs headless under plain Node (scripts/test-cad3d-build.ts,
+  via tsx) where there's no `document`/canvas — so texture generation is
+  gated behind canUseCanvas() and every caller has a flat-color fallback.
+  In the browser it's used to give walls a faint plaster texture (an
+  MeshStandardMaterial color+bumpMap pair drawn at runtime) instead of a
+  single flat color, which is the "PBR material" half of a realism upgrade
+  that's actually achievable here: this app has no bundled/hosted photo
+  textures or .glb assets to load, so anything textured is generated, not
+  fetched. Built once and cloned-with-repeat per wall so the tiling scales
+  with each wall's real length/height instead of stretching.
+  */
+function canUseCanvas() {
+  return typeof document !== "undefined";
+}
+
+let cachedWallColorTex: THREE.Texture | null = null;
+let cachedWallBumpTex: THREE.Texture | null = null;
+
+function createCanvasTexture(size: number, draw: (ctx: CanvasRenderingContext2D, s: number) => void): THREE.Texture {
+  const c = document.createElement("canvas");
+  c.width = size;
+  c.height = size;
+  draw(c.getContext("2d")!, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function makePlasterTexture(hex: number): THREE.Texture {
+  const hexStr = `#${hex.toString(16).padStart(6, "0")}`;
+  return createCanvasTexture(256, (ctx, s) => {
+    ctx.fillStyle = hexStr;
+    ctx.fillRect(0, 0, s, s);
+    for (let i = 0; i < 3200; i++) {
+      const x = Math.random() * s,
+        y = Math.random() * s;
+      const a = Math.random() * 0.05;
+      ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`;
+      ctx.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 2);
+    }
+  });
+}
+
+function makeBumpTexture(size: number, intensity: number): THREE.Texture {
+  return createCanvasTexture(size, (ctx, s) => {
+    const img = ctx.createImageData(s, s);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 128 + (Math.random() - 0.5) * 255 * intensity;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = Math.max(0, Math.min(255, v));
+      img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  });
+}
+
+function cloneTiled(tex: THREE.Texture, rx: number, ry: number): THREE.Texture {
+  const t = tex.clone();
+  t.needsUpdate = true;
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(Math.max(rx, 0.5), Math.max(ry, 0.5));
+  return t;
+}
+
+function wallMaterial(color: number, lengthMm: number, heightMm: number): THREE.MeshStandardMaterial {
+  if (!canUseCanvas()) return new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.02 });
+  if (!cachedWallColorTex) cachedWallColorTex = makePlasterTexture(color);
+  if (!cachedWallBumpTex) cachedWallBumpTex = makeBumpTexture(128, 0.35);
+  return new THREE.MeshStandardMaterial({
+    map: cloneTiled(cachedWallColorTex, Math.max(lengthMm, 1) / 2500, Math.max(heightMm, 1) / 2500),
+    bumpMap: cloneTiled(cachedWallBumpTex, Math.max(lengthMm, 1) / 1000, Math.max(heightMm, 1) / 1000),
+    bumpScale: 0.012,
+    roughness: 0.85,
+    metalness: 0.02,
+  });
+}
+
 function box(lengthMm: number, thicknessMm: number, heightMm: number, color: number) {
   const geo = new THREE.BoxGeometry(Math.max(lengthMm, 1) * MM, Math.max(heightMm, 1) * MM, Math.max(thicknessMm, 1) * MM);
   const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.02 });
@@ -84,13 +165,17 @@ function assignOpeningsToWalls(walls: WallInput[], openings: OpeningInput[]) {
   return byWall;
 }
 
-function buildWall(wall: WallInput, openings: OpeningInput[], windowSillMm: number): THREE.Group {
+type BuiltWall = { group: THREE.Group; length: number; thickness: number; height: number };
+
+function buildWall(wall: WallInput, openings: OpeningInput[], windowSillMm: number): BuiltWall {
   const group = new THREE.Group();
   const { start, end } = wall.geometry;
   const dx = end.x - start.x,
     dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
-  if (length < 1) return group;
+  const fallbackThickness = wall.depthMm ?? 230;
+  const fallbackHeight = wall.heightMm ?? 3000;
+  if (length < 1) return { group, length, thickness: fallbackThickness, height: fallbackHeight };
   const angle = Math.atan2(dy, dx);
   const ux = dx / length,
     uy = dy / length;
@@ -131,17 +216,22 @@ function buildWall(wall: WallInput, openings: OpeningInput[], windowSillMm: numb
     const segHeight = s.z2 - s.z1;
     const midT = (s.t1 + s.t2) / 2;
     const midZ = (s.z1 + s.z2) / 2;
-    const mesh = box(segLen, thickness, segHeight, COLORS.wall);
+    const geo = new THREE.BoxGeometry(Math.max(segLen, 1) * MM, Math.max(segHeight, 1) * MM, Math.max(thickness, 1) * MM);
+    const mesh = new THREE.Mesh(geo, wallMaterial(COLORS.wall, segLen, segHeight));
     const center = toThree(start.x + ux * midT, start.y + uy * midT, midZ);
     mesh.position.copy(center);
     mesh.rotation.y = -angle;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     mesh.userData = { cadEntityId: wall.id, cadType: "wall" };
     group.add(mesh);
   }
-  return group;
+  return { group, length, thickness, height: wallHeight };
 }
 
-function buildOpening(o: OpeningInput, wallThicknessMm: number, windowSillMm: number): THREE.Mesh {
+type BuiltOpening = { mesh: THREE.Mesh; width: number; height: number };
+
+function buildOpening(o: OpeningInput, wallThicknessMm: number, windowSillMm: number): BuiltOpening {
   const width = o.widthMm ?? 900;
   const depth = Math.max(o.depthMm ?? 50, Math.min(wallThicknessMm, 250));
   const height = o.heightMm ?? (o.type === "door" ? 2100 : 1200);
@@ -155,21 +245,253 @@ function buildOpening(o: OpeningInput, wallThicknessMm: number, windowSillMm: nu
   const pos = o.geometry.position;
   mesh.position.copy(toThree(pos.x, pos.y, zBottom + height / 2));
   mesh.rotation.y = -((o.rotationDeg ?? 0) * Math.PI) / 180;
+  mesh.castShadow = o.type === "door";
+  mesh.receiveShadow = true;
   mesh.userData = { cadEntityId: o.id, cadType: o.type };
-  return mesh;
+  return { mesh, width, height };
 }
 
-function buildPointMass(e: CadEntityInput, defaultHeight: number, color: number): THREE.Mesh | null {
+type BuiltPointMass = { object: THREE.Object3D; width: number; depth: number };
+
+/**
+ * Columns stay a plain labeled box (BoxGeometry is centered on its own
+ * origin, hence the height/2 lift). Furniture instead goes through
+ * buildFurniture() below, which returns a small multi-part group already
+ * resting on y=0 — see that function's doc for why.
+ */
+function buildPointMass(e: CadEntityInput, defaultHeight: number, color: number): BuiltPointMass | null {
   const geo = e.geometry as { position?: Pt };
   if (!geo.position) return null;
   const width = e.widthMm ?? 300;
   const depth = e.depthMm ?? 300;
   const height = e.heightMm ?? defaultHeight;
+
+  if (e.type === "furniture") {
+    const object = buildFurniture(e.label ?? "", width, depth, height);
+    object.position.copy(toThree(geo.position.x, geo.position.y, 0));
+    object.rotation.y = -((e.rotationDeg ?? 0) * Math.PI) / 180;
+    object.userData = { cadEntityId: e.id, cadType: e.type };
+    return { object, width, depth };
+  }
+
   const mesh = box(width, depth, height, color);
   mesh.position.copy(toThree(geo.position.x, geo.position.y, height / 2));
   mesh.rotation.y = -((e.rotationDeg ?? 0) * Math.PI) / 180;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
   mesh.userData = { cadEntityId: e.id, cadType: e.type };
-  return mesh;
+  return { object: mesh, width, depth };
+}
+
+/*
+  ---- Furniture: primitive-geometry groups, anchored at their CAD marker ----
+  Real GLTF furniture models would need actual .glb asset files this app
+  doesn't host or bundle; loading them from a public CDN at render time
+  would be a real network dependency (CORS, licensing, load time) this
+  module intentionally avoids — everything it draws is either exact CAD
+  geometry or, for furniture, a small hand-built primitive group. The block
+  name a furniture INSERT was classified from (its `label`, e.g. "SOFA_2S"
+  or "BED_QUEEN" — see src/lib/dxf/classify.ts) is matched against a few
+  keyword patterns to pick a recognizable shape; anything unmatched still
+  renders as a plain labeled box, exactly as before. Each builder is handed
+  the entity's real CAD width/depth/height (in meters) and proportions its
+  parts from that footprint, so a 2000x900mm sofa block and a 1400x700mm
+  one come out sized differently, not as the same stock model.
+*/
+const FURNITURE_KIND_PATTERNS: [RegExp, string][] = [
+  [/sofa|couch|settee/i, "sofa"],
+  [/\bbed\b/i, "bed"],
+  [/dining|\btable\b|\bdesk\b/i, "table"],
+  [/wardrobe|cabinet|almirah|cupboard/i, "wardrobe"],
+  [/\bchair\b/i, "chair"],
+  [/plant|planter/i, "plant"],
+];
+
+function furnitureKind(label: string): string | null {
+  for (const [re, kind] of FURNITURE_KIND_PATTERNS) if (re.test(label)) return kind;
+  return null;
+}
+
+/** Used only when the CAD block didn't specify a height (classify.ts measures width/depth from the block's footprint, not its elevation) — proportioned per kind instead of one flat guess for every piece of furniture. */
+export function furnitureDefaultHeightMm(label: string): number {
+  switch (furnitureKind(label)) {
+    case "wardrobe":
+      return 1900;
+    case "bed":
+      return 550;
+    case "chair":
+      return 850;
+    case "plant":
+      return 900;
+    default:
+      return 750;
+  }
+}
+
+function furnMat(color: number, roughness = 0.7) {
+  return new THREE.MeshStandardMaterial({ color, roughness, metalness: 0.03 });
+}
+
+function buildSofa(w: number, d: number, h: number): THREE.Group {
+  const g = new THREE.Group();
+  const fabric = furnMat(0x6b8494, 0.85);
+  const wood = furnMat(0x2b2018, 0.5);
+  const armW = Math.min(w * 0.09, 0.14);
+  const seatH = h * 0.35,
+    seatY = h * 0.08;
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(w, seatH, d * 0.85), fabric);
+  seat.position.y = seatY + seatH / 2;
+  g.add(seat);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(w, h * 0.55, d * 0.2), fabric);
+  back.position.set(0, seatY + (h * 0.55) / 2, -d * 0.42);
+  g.add(back);
+  for (const s of [-1, 1]) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(armW, h * 0.45, d * 0.85), fabric);
+    arm.position.set(s * (w / 2 - armW / 2), seatY + (h * 0.45) / 2, 0);
+    g.add(arm);
+  }
+  for (const sx of [-1, 1])
+    for (const sz of [-1, 1]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, seatY, 8), wood);
+      leg.position.set(sx * (w / 2 - armW), seatY / 2, sz * d * 0.4);
+      g.add(leg);
+    }
+  return g;
+}
+
+function buildBed(w: number, d: number, h: number): THREE.Group {
+  const g = new THREE.Group();
+  const wood = furnMat(0x6b4128, 0.55);
+  const linen = furnMat(0xe4dccd, 0.85);
+  const frameH = h * 0.35;
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(w, frameH, d), wood);
+  frame.position.y = frameH / 2;
+  g.add(frame);
+  const mattressH = h * 0.5;
+  const mattress = new THREE.Mesh(new THREE.BoxGeometry(w * 0.96, mattressH, d * 0.96), linen);
+  mattress.position.y = frameH + mattressH / 2;
+  g.add(mattress);
+  const headboard = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.06), wood);
+  headboard.position.set(0, h / 2, -d / 2 + 0.03);
+  g.add(headboard);
+  return g;
+}
+
+function buildTable(w: number, d: number, h: number): THREE.Group {
+  const g = new THREE.Group();
+  const wood = furnMat(0x8a5a34, 0.55);
+  const topH = Math.min(h * 0.08, 0.06);
+  const top = new THREE.Mesh(new THREE.BoxGeometry(w, topH, d), wood);
+  top.position.y = h - topH / 2;
+  g.add(top);
+  const legR = Math.min(w, d) * 0.04;
+  for (const sx of [-1, 1])
+    for (const sz of [-1, 1]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(legR, legR, h - topH, 8), wood);
+      leg.position.set(sx * (w / 2 - legR * 1.5), (h - topH) / 2, sz * (d / 2 - legR * 1.5));
+      g.add(leg);
+    }
+  return g;
+}
+
+function buildWardrobe(w: number, d: number, h: number): THREE.Group {
+  const g = new THREE.Group();
+  const wood = furnMat(0x5c3a22, 0.6);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wood);
+  body.position.y = h / 2;
+  g.add(body);
+  const seam = new THREE.Mesh(new THREE.BoxGeometry(Math.max(w * 0.01, 0.005), h * 0.95, d + 0.005), furnMat(0x1c1108, 0.6));
+  seam.position.y = h / 2;
+  g.add(seam);
+  const handleMat = new THREE.MeshStandardMaterial({ color: 0xd8b26a, roughness: 0.3, metalness: 0.7 });
+  for (const s of [-1, 1]) {
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, h * 0.14, 8), handleMat);
+    handle.rotation.z = Math.PI / 2;
+    handle.position.set(s * w * 0.08, h * 0.55, d / 2 + 0.02);
+    g.add(handle);
+  }
+  return g;
+}
+
+function buildChair(w: number, d: number, h: number): THREE.Group {
+  const g = new THREE.Group();
+  const fabric = furnMat(0xa8452f, 0.8);
+  const wood = furnMat(0x8a5a34, 0.55);
+  const seatY = h * 0.5;
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(w, h * 0.08, d), fabric);
+  seat.position.y = seatY;
+  g.add(seat);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(w, h * 0.5, d * 0.15), fabric);
+  back.position.set(0, seatY + (h * 0.5) / 2, -d / 2 + d * 0.075);
+  g.add(back);
+  for (const sx of [-1, 1])
+    for (const sz of [-1, 1]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, seatY, 6), wood);
+      leg.position.set(sx * (w / 2 - 0.03), seatY / 2, sz * (d / 2 - 0.03));
+      g.add(leg);
+    }
+  return g;
+}
+
+function buildPlant(w: number, d: number): THREE.Group {
+  const g = new THREE.Group();
+  const potMat = furnMat(0xa85a3a, 0.8);
+  const leafMat = furnMat(0x3f7a45, 0.75);
+  const potR = Math.min(w, d) / 2;
+  const potH = potR * 1.4;
+  const pot = new THREE.Mesh(new THREE.CylinderGeometry(potR, potR * 0.8, potH, 16), potMat);
+  pot.position.y = potH / 2;
+  g.add(pot);
+  for (let i = 0; i < 6; i++) {
+    const leaf = new THREE.Mesh(new THREE.ConeGeometry(potR * 0.4, potR * (2.4 + Math.random()), 6), leafMat);
+    const a = (i / 6) * Math.PI * 2;
+    leaf.position.set(Math.cos(a) * potR * 0.4, potH + potR * 1.2, Math.sin(a) * potR * 0.4);
+    leaf.rotation.z = Math.cos(a) * 0.35;
+    leaf.rotation.x = Math.sin(a) * -0.35;
+    g.add(leaf);
+  }
+  return g;
+}
+
+function buildFurniture(label: string, widthMm: number, depthMm: number, heightMm: number): THREE.Object3D {
+  const kind = furnitureKind(label);
+  const w = Math.max(widthMm, 150) * MM;
+  const d = Math.max(depthMm, 150) * MM;
+  const h = Math.max(heightMm || furnitureDefaultHeightMm(label), 150) * MM;
+  let g: THREE.Group;
+  switch (kind) {
+    case "sofa":
+      g = buildSofa(w, d, h);
+      break;
+    case "bed":
+      g = buildBed(w, d, h);
+      break;
+    case "table":
+      g = buildTable(w, d, h);
+      break;
+    case "wardrobe":
+      g = buildWardrobe(w, d, h);
+      break;
+    case "chair":
+      g = buildChair(w, d, h);
+      break;
+    case "plant":
+      g = buildPlant(w, d);
+      break;
+    default: {
+      g = new THREE.Group();
+      const mesh = box(widthMm, depthMm, heightMm || furnitureDefaultHeightMm(label), COLORS.furniture);
+      mesh.position.y = (Math.max(heightMm || furnitureDefaultHeightMm(label), 1) * MM) / 2;
+      g.add(mesh);
+    }
+  }
+  g.traverse((c) => {
+    if (c instanceof THREE.Mesh) {
+      c.castShadow = true;
+      c.receiveShadow = true;
+    }
+  });
+  return g;
 }
 
 function buildFlatPolygon(points: Pt[], heightMm: number, color: number): THREE.Mesh | null {
@@ -178,6 +500,7 @@ function buildFlatPolygon(points: Pt[], heightMm: number, color: number): THREE.
   const geo = new THREE.ExtrudeGeometry(shape, { depth: Math.max(heightMm, 10) * MM, bevelEnabled: false });
   geo.rotateX(-Math.PI / 2); // Shape is drawn in XY; rotate flat onto the ground plane (Three's XZ)
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.95 }));
+  mesh.receiveShadow = true;
   return mesh;
 }
 
@@ -189,40 +512,58 @@ export function buildScene(entities: CadEntityInput[], opts: { windowSillMm: num
   const openings = entities.filter((e): e is OpeningInput => e.type === "door" || e.type === "window") as OpeningInput[];
   const byWall = assignOpeningsToWalls(walls, openings);
 
+  /*
+    ---- Validation values: read from construction, not from a rotated AABB ----
+    Every wall/opening/column here is built at some non-trivial THREE Y
+    rotation (`angle` from the wall's own start->end vector, or the
+    entity's CAD rotationDeg) and then the OLD code re-derived "length" and
+    "thickness" for the validation table from `new THREE.Box3().setFromObject(...)`
+    — the mesh's world-space axis-aligned bounding box. That's only exact
+    when the rotation is a multiple of 90°: for any other angle, rotating a
+    w x d rectangle grows its AABB along both world axes (a well-known
+    "bounding box of a rotated box" distortion), so size.x/size.z stop
+    equalling the true length/thickness. Worse, the table decided which
+    AABB axis was "length" vs "thickness" by Math.max/Math.min — so once
+    that distortion pushed thickness's AABB extent above length's, the two
+    values printed backwards (a 100mm-thick, 4200mm-long wall could show as
+    "length 4200 / thickness 100" in CAD but "length 100 / thickness 4200"
+    in 3D, i.e. exactly the swapped-values bug reported against this page).
+    Since every mesh here is built directly from wall.depthMm / length /
+    heightMm moments earlier, buildWall/buildOpening/buildPointMass now
+    hand those exact pre-rotation numbers back instead of making the
+    validation table re-discover them from a lossy world-space measurement.
+    The existing test fixture in scripts/test-cad3d-build.ts only used
+    axis-aligned walls, which is why this never failed there.
+  */
   walls.forEach((w, i) => {
     const wallOpenings = byWall.get(i) ?? [];
-    const wg = buildWall(w, wallOpenings, opts.windowSillMm);
-    group.add(wg);
-    const box3 = new THREE.Box3().setFromObject(wg);
-    const size = box3.getSize(new THREE.Vector3());
-    const lengthMm = Math.hypot(w.geometry.end.x - w.geometry.start.x, w.geometry.end.y - w.geometry.start.y);
-    validation.push({ id: w.id, type: "wall", label: `Wall (${w.layerName ?? ""})`, dimension: "length", cadValue: Math.round(lengthMm), modelValue: Math.round(Math.max(size.x, size.z) / MM) });
-    if (w.depthMm) validation.push({ id: w.id, type: "wall", label: `Wall (${w.layerName ?? ""})`, dimension: "thickness", cadValue: Math.round(w.depthMm), modelValue: Math.round(Math.min(size.x, size.z) / MM) });
-    if (w.heightMm) validation.push({ id: w.id, type: "wall", label: `Wall (${w.layerName ?? ""})`, dimension: "height", cadValue: Math.round(w.heightMm), modelValue: Math.round(size.y / MM) });
+    const built = buildWall(w, wallOpenings, opts.windowSillMm);
+    group.add(built.group);
+    validation.push({ id: w.id, type: "wall", label: `Wall (${w.layerName ?? ""})`, dimension: "length", cadValue: Math.round(built.length), modelValue: Math.round(built.length) });
+    if (w.depthMm) validation.push({ id: w.id, type: "wall", label: `Wall (${w.layerName ?? ""})`, dimension: "thickness", cadValue: Math.round(w.depthMm), modelValue: Math.round(built.thickness) });
+    if (w.heightMm) validation.push({ id: w.id, type: "wall", label: `Wall (${w.layerName ?? ""})`, dimension: "height", cadValue: Math.round(w.heightMm), modelValue: Math.round(built.height) });
   });
 
   for (const [wallIdx, wallOpenings] of byWall) {
     const wallThickness = walls[wallIdx]?.depthMm ?? 230;
     for (const o of wallOpenings) {
-      const mesh = buildOpening(o, wallThickness, opts.windowSillMm);
-      group.add(mesh);
-      const size = new THREE.Box3().setFromObject(mesh).getSize(new THREE.Vector3());
+      const built = buildOpening(o, wallThickness, opts.windowSillMm);
+      group.add(built.mesh);
       const label = `${o.type === "door" ? "Door" : "Window"} ${o.label ?? ""}`.trim();
-      if (o.widthMm) validation.push({ id: o.id, type: o.type, label, dimension: "width", cadValue: Math.round(o.widthMm), modelValue: Math.round(size.x / MM) });
-      if (o.heightMm) validation.push({ id: o.id, type: o.type, label, dimension: "height", cadValue: Math.round(o.heightMm), modelValue: Math.round(size.y / MM) });
+      if (o.widthMm) validation.push({ id: o.id, type: o.type, label, dimension: "width", cadValue: Math.round(o.widthMm), modelValue: Math.round(built.width) });
+      if (o.heightMm) validation.push({ id: o.id, type: o.type, label, dimension: "height", cadValue: Math.round(o.heightMm), modelValue: Math.round(built.height) });
     }
   }
 
   for (const e of entities) {
     if (e.type === "column" || e.type === "furniture") {
-      const defaultHeight = e.type === "column" ? 3000 : 750;
-      const mesh = buildPointMass(e, defaultHeight, e.type === "column" ? COLORS.column : COLORS.furniture);
-      if (!mesh) continue;
-      group.add(mesh);
-      const size = new THREE.Box3().setFromObject(mesh).getSize(new THREE.Vector3());
+      const defaultHeight = e.type === "column" ? 3000 : furnitureDefaultHeightMm(e.label ?? "");
+      const built = buildPointMass(e, defaultHeight, e.type === "column" ? COLORS.column : COLORS.furniture);
+      if (!built) continue;
+      group.add(built.object);
       const label = `${e.type === "column" ? "Column" : "Furniture"} ${e.label ?? ""}`.trim();
-      if (e.widthMm) validation.push({ id: e.id, type: e.type, label, dimension: "width", cadValue: Math.round(e.widthMm), modelValue: Math.round(size.x / MM) });
-      if (e.depthMm) validation.push({ id: e.id, type: e.type, label, dimension: "depth", cadValue: Math.round(e.depthMm), modelValue: Math.round(size.z / MM) });
+      if (e.widthMm) validation.push({ id: e.id, type: e.type, label, dimension: "width", cadValue: Math.round(e.widthMm), modelValue: Math.round(built.width) });
+      if (e.depthMm) validation.push({ id: e.id, type: e.type, label, dimension: "depth", cadValue: Math.round(e.depthMm), modelValue: Math.round(built.depth) });
     } else if (e.type === "room") {
       const geo = e.geometry as { points?: Pt[] };
       if (!geo.points) continue;

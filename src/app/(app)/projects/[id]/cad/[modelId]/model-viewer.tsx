@@ -50,17 +50,35 @@ export function ModelViewer({
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf3f1ea);
     scene.add(group);
-    scene.add(new THREE.GridHelper(60, 60, 0xc9c3b3, 0xe7e2d6));
+    const grid = new THREE.GridHelper(60, 60, 0xc9c3b3, 0xe7e2d6);
+    scene.add(grid);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-    dir.position.set(6, 12, 8);
-    scene.add(dir);
+    // Soft sky/ground fill plus one shadow-casting sun — walls/floor/
+    // furniture below all set castShadow/receiveShadow, so this is what
+    // actually grounds them instead of the flat, shadowless look before.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x3a3428, 0.55));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.2));
 
     const box = new THREE.Box3().setFromObject(group);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z, 3);
+
+    const dir = new THREE.DirectionalLight(0xfff3df, 2.2);
+    dir.position.set(center.x + maxDim * 0.6, center.y + maxDim * 1.2, center.z + maxDim * 0.5);
+    dir.target.position.copy(center);
+    dir.castShadow = true;
+    dir.shadow.mapSize.set(2048, 2048);
+    dir.shadow.bias = -0.0005;
+    const shadowExtent = maxDim * 0.75;
+    dir.shadow.camera.left = -shadowExtent;
+    dir.shadow.camera.right = shadowExtent;
+    dir.shadow.camera.top = shadowExtent;
+    dir.shadow.camera.bottom = -shadowExtent;
+    dir.shadow.camera.near = 0.1;
+    dir.shadow.camera.far = maxDim * 4;
+    scene.add(dir);
+    scene.add(dir.target);
 
     const height = 420;
     const width = container.clientWidth || 640;
@@ -71,6 +89,11 @@ export function ModelViewer({
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
     container.replaceChildren(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -101,9 +124,18 @@ export function ModelViewer({
       group.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
           obj.geometry.dispose();
-          const mat = obj.material;
-          if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-          else mat.dispose();
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const mat of mats) {
+            // Wall materials now carry cloned canvas textures (map/bumpMap,
+            // one clone per wall span for correct tiling) — mat.dispose()
+            // alone doesn't free those, so without this every model view
+            // would leak a texture per wall span.
+            if (mat instanceof THREE.MeshStandardMaterial) {
+              mat.map?.dispose();
+              mat.bumpMap?.dispose();
+            }
+            mat.dispose();
+          }
         }
       });
     };
