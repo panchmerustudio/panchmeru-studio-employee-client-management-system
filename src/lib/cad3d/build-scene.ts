@@ -39,6 +39,7 @@ const COLORS = {
   furniture: 0xb7a48c,
   stair: 0x9a9a9a,
   room: 0xf3ead7,
+  floor: 0xd7cbb0,
 };
 
 function toThree(x: number, y: number, z = 0) {
@@ -88,6 +89,27 @@ function makePlasterTexture(hex: number): THREE.Texture {
       const a = Math.random() * 0.05;
       ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`;
       ctx.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 2);
+    }
+  });
+}
+
+/** One square floor tile per texture image — repeat.set() on the caller tiles it across the real floor size, so the grout grid lines up with real-world 600mm tiles instead of stretching one image over the whole slab. */
+function makeTileTexture(): THREE.Texture {
+  return createCanvasTexture(256, (ctx, s) => {
+    const grout = "#a89a7c";
+    const base = "#d9cfb4";
+    ctx.fillStyle = grout;
+    ctx.fillRect(0, 0, s, s);
+    const inset = Math.round(s * 0.035);
+    ctx.fillStyle = base;
+    ctx.fillRect(inset, inset, s - inset * 2, s - inset * 2);
+    // faint per-tile sheen/speckle so adjacent tiles don't read as one flat sheet
+    for (let i = 0; i < 90; i++) {
+      const x = inset + Math.random() * (s - inset * 2);
+      const y = inset + Math.random() * (s - inset * 2);
+      const a = Math.random() * 0.05;
+      ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`;
+      ctx.fillRect(x, y, 1 + Math.random() * 3, 1 + Math.random() * 3);
     }
   });
 }
@@ -314,6 +336,8 @@ const FURNITURE_KIND_PATTERNS: [RegExp, string][] = [
   [/wardrobe|cabinet|almirah|cupboard/i, "wardrobe"],
   [/\bchair\b/i, "chair"],
   [/plant|planter/i, "plant"],
+  [/\bwc\b|toilet|commode|wash\s*basin|\bbasin\b|\bsink\b|urinal|bidet/i, "sanitary"],
+  [/oven|\brange\b|stove|hob|cooktop|refrigerator|\bfridge\b/i, "appliance"],
 ];
 
 function furnitureKind(label: string): string | null {
@@ -332,13 +356,17 @@ export function furnitureDefaultHeightMm(label: string): number {
       return 850;
     case "plant":
       return 900;
+    case "sanitary":
+      return 750;
+    case "appliance":
+      return 900;
     default:
       return 750;
   }
 }
 
-function furnMat(color: number, roughness = 0.7) {
-  return new THREE.MeshStandardMaterial({ color, roughness, metalness: 0.03 });
+function furnMat(color: number, roughness = 0.7, metalness = 0.03) {
+  return new THREE.MeshStandardMaterial({ color, roughness, metalness });
 }
 
 function buildSofa(w: number, d: number, h: number): THREE.Group {
@@ -462,6 +490,33 @@ function buildPlant(w: number, d: number): THREE.Group {
   return g;
 }
 
+/** Covers WC/basin/sink-type sanitary fixtures — a simple two-tier porcelain-white mass (bowl/counter + tank/splashback) rather than a plain furniture-brown box, since a toilet or basin rendered in wood-tan reads as obviously wrong even at a glance. */
+function buildSanitary(w: number, d: number, h: number): THREE.Group {
+  const g = new THREE.Group();
+  const porcelain = furnMat(0xf1f0ea, 0.25, 0.05);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(w, h * 0.55, d), porcelain);
+  base.position.y = (h * 0.55) / 2;
+  g.add(base);
+  const tank = new THREE.Mesh(new THREE.BoxGeometry(w * 0.82, h * 0.45, d * 0.32), porcelain);
+  tank.position.set(0, h * 0.55 + (h * 0.45) / 2, -d * 0.3);
+  g.add(tank);
+  return g;
+}
+
+/** Kitchen appliances (range/oven/hob/fridge) — a brushed-steel body with a dark control panel band, instead of the same flat furniture-brown box every other unrecognized block gets. */
+function buildAppliance(w: number, d: number, h: number): THREE.Group {
+  const g = new THREE.Group();
+  const steel = furnMat(0xb7bcbe, 0.35, 0.75);
+  const dark = furnMat(0x18181a, 0.4, 0.4);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), steel);
+  body.position.y = h / 2;
+  g.add(body);
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(w * 0.92, h * 0.16, Math.max(d * 0.02, 0.01)), dark);
+  panel.position.set(0, h * 0.86, d / 2 + 0.006);
+  g.add(panel);
+  return g;
+}
+
 function buildFurniture(label: string, widthMm: number, depthMm: number, heightMm: number): THREE.Object3D {
   const kind = furnitureKind(label);
   const w = Math.max(widthMm, 150) * MM;
@@ -486,6 +541,12 @@ function buildFurniture(label: string, widthMm: number, depthMm: number, heightM
       break;
     case "plant":
       g = buildPlant(w, d);
+      break;
+    case "sanitary":
+      g = buildSanitary(w, d, h);
+      break;
+    case "appliance":
+      g = buildAppliance(w, d, h);
       break;
     default: {
       g = new THREE.Group();
@@ -513,6 +574,62 @@ function buildFlatPolygon(points: Pt[], heightMm: number, color: number): THREE.
   return mesh;
 }
 
+/**
+ * A ground slab under the whole building footprint, tiled like real
+ * flooring. Real DXF floor plans essentially never carry a dedicated
+ * "room" layer with closed boundary polylines (that's the rare/idealized
+ * case the ROOM_RE classifier already handles) — most just have wall
+ * lines, so without this every model rendered as walls floating over the
+ * viewer's grid helper with nothing underfoot. The footprint here is the
+ * simple axis-aligned bounding box of every wall endpoint: not as precise
+ * as tracing the actual (possibly L-shaped/irregular) perimeter, but a
+ * single flat slab under the whole building is a solid, robust default —
+ * and correct in the overwhelmingly common rectangular-plan case.
+ */
+function buildFloorSlab(walls: WallInput[]): THREE.Mesh | null {
+  if (walls.length === 0) return null;
+  const pts = walls.flatMap((w) => [w.geometry.start, w.geometry.end]);
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const marginMm = 150; // extend slightly past the outer wall faces so there's no sliver gap at the perimeter
+  minX -= marginMm;
+  minY -= marginMm;
+  maxX += marginMm;
+  maxY += marginMm;
+  const widthMm = maxX - minX;
+  const depthMm = maxY - minY;
+  if (widthMm < 100 || depthMm < 100) return null;
+
+  const thicknessMm = 60;
+  const geo = new THREE.BoxGeometry(widthMm * MM, thicknessMm * MM, depthMm * MM);
+
+  let mat: THREE.MeshStandardMaterial;
+  if (canUseCanvas()) {
+    const tileSizeM = 0.6; // standard ~600mm ceramic floor tile
+    const repeatX = Math.max(1, Math.round((widthMm * MM) / tileSizeM));
+    const repeatY = Math.max(1, Math.round((depthMm * MM) / tileSizeM));
+    const tex = makeTileTexture();
+    tex.repeat.set(repeatX, repeatY);
+    mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.45, metalness: 0.04 });
+  } else {
+    mat = new THREE.MeshStandardMaterial({ color: COLORS.floor, roughness: 0.5, metalness: 0.04 });
+  }
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(((minX + maxX) / 2) * MM, (-thicknessMm / 2) * MM, ((minY + maxY) / 2) * MM);
+  mesh.receiveShadow = true;
+  mesh.userData = { cadType: "floor" };
+  return mesh;
+}
+
 export function buildScene(entities: CadEntityInput[], opts: { windowSillMm: number }): { group: THREE.Group; validation: ValidationRow[] } {
   const group = new THREE.Group();
   const validation: ValidationRow[] = [];
@@ -520,6 +637,9 @@ export function buildScene(entities: CadEntityInput[], opts: { windowSillMm: num
   const walls = entities.filter((e): e is WallInput => e.type === "wall") as WallInput[];
   const openings = entities.filter((e): e is OpeningInput => e.type === "door" || e.type === "window") as OpeningInput[];
   const byWall = assignOpeningsToWalls(walls, openings);
+
+  const floor = buildFloorSlab(walls);
+  if (floor) group.add(floor);
 
   /*
     ---- Validation values: read from construction, not from a rotated AABB ----

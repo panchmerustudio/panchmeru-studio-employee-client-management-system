@@ -76,6 +76,22 @@ const dxf = {
     { type: "LINE", layer: "0", handle: 40, vertices: [{ x: -500, y: -500 }, { x: -100, y: -500 }] },
     // Annotation clutter — should be counted, not stored
     { type: "DIMENSION", layer: "A-DIM", handle: 41 },
+
+    // A short jamb-reveal-style line pair on the wall layer (140mm apart,
+    // matching the real-world case this filter targets) — should NOT
+    // become a "wall", just unclassified.
+    { type: "LINE", layer: "A-WALL", handle: 50, vertices: [{ x: 1000, y: -T }, { x: 1000, y: -T - 140 }] },
+    { type: "LINE", layer: "A-WALL", handle: 51, vertices: [{ x: 1080, y: -T }, { x: 1080, y: -T - 140 }] },
+
+    // An AutoCAD anonymous/system block (hatch associativity artifact) —
+    // should never be rendered as furniture regardless of its bbox.
+    { type: "INSERT", layer: "A-WALL", handle: 52, name: "A$C30F0512F", position: { x: 2000, y: 1800 }, rotation: 0, xScale: 1, yScale: 1 },
+
+    // A furniture block positioned WAY outside the building's own walls —
+    // simulating a schedule/legend/second-sheet block sharing the same
+    // modelspace. Should be excluded from furniture, not scattered into
+    // the 3D scene far from the building.
+    { type: "INSERT", layer: "A-FURN", handle: 53, name: "DESK_1800", position: { x: 90000, y: 90000 }, rotation: 0, xScale: 1, yScale: 1 },
   ],
 } as unknown as IDxf;
 
@@ -121,6 +137,20 @@ const room = result.entities.find((e) => e.type === "room") as Extract<typeof re
 check("room found with label from nearby TEXT", !!room && room.label === "Living Room");
 check("stray line -> unclassified count includes it", result.unclassifiedCount >= 2); // stray line + ghost block
 check("DIMENSION + TEXT ignored as annotation clutter, not unclassified", result.ignoredAnnotationCount === 2);
+
+// Short jamb-reveal-style wall pair (140mm apart) must not appear as a wall.
+check("140mm jamb-reveal pair is NOT classified as a wall", !walls.some((w) => Math.hypot(w.end.x - w.start.x, w.end.y - w.start.y) < 250));
+check("140mm jamb-reveal pair surfaces as unclassified instead", result.entities.some((e) => e.type === "unclassified" && e.label.includes("too short to be a real wall")));
+
+// AutoCAD anonymous/system block must never become furniture/door/window/column.
+check("A$C... anonymous block is never classified as furniture", !result.entities.some((e) => e.type === "furniture" && e.label === "A$C30F0512F"));
+check("A$C... anonymous block surfaces as unclassified instead", result.entities.some((e) => e.type === "unclassified" && e.label.includes("Internal AutoCAD block")));
+
+// Furniture block far outside the building's walls must not be placed as real furniture.
+check("far-away DESK_1800 (90000,90000) excluded from furniture", !result.entities.some((e) => e.type === "furniture" && e.position.x > 50000));
+check("far-away block surfaces as unclassified (footprint outlier)", result.entities.some((e) => e.type === "unclassified" && e.label.includes("far outside the building's walls")));
+// The real, in-place desk (2000,500) must still come through untouched.
+check("in-footprint desk still classified as furniture", !!desk);
 
 function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);

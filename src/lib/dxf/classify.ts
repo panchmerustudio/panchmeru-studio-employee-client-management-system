@@ -27,11 +27,37 @@ const COLUMN_RE = /\bcol(umn)?\b/i;
 const STAIR_RE = /stair/i;
 const ROOM_RE = /room|area|\bspace\b/i;
 
+// AutoCAD's own internal bookkeeping blocks — anonymous instances it creates
+// for hatch/dimension/array associativity, never something a drafter placed
+// on purpose. Standard naming conventions: "*U123"/"*D456" for anonymous
+// dynamic-block instances, "A$C" + hex handle for anonymous blocks saved to
+// disk (the on-disk form of the same thing, e.g. what a hatch's associative
+// boundary gets stored as). A real furniture/fixture block is always
+// human-named ("sofa", "DESK_01", "Range-Oven - 30 in top"); nothing a user
+// intentionally inserts starts with either prefix, so these are always safe
+// to treat as internal geometry rather than a placeable real-world object.
+const SYSTEM_BLOCK_RE = /^(\*|A\$C)/i;
+
 const MIN_WALL_THICKNESS_MM = 50;
 const MAX_WALL_THICKNESS_MM = 600;
+// Below this, a "wall" found by line-pairing is almost never a real wall —
+// it's a door/window jamb reveal stub, a plaster-return tick mark, or some
+// other short drafting artifact that happens to be two roughly-parallel
+// lines close together. Real load-bearing/partition walls are essentially
+// never physically shorter than this. Keeping these out of the wall count
+// (they surface as "unclassified" instead) is what stops a real floor plan
+// from rendering as a field of tiny floating slabs at every opening.
+const MIN_WALL_LENGTH_MM = 250;
 const ANGLE_TOLERANCE_RAD = (2 * Math.PI) / 180;
 const MIN_OVERLAP_RATIO = 0.4;
 const MAX_UNCLASSIFIED_STORED = 500;
+// How far outside the walls' own bounding box a door/window/column/furniture
+// block can sit before it's treated as belonging to some other part of the
+// same DWG sheet (a schedule, a detail callout, a second floor plan) rather
+// than this building — expressed as a fraction of the footprint's larger
+// dimension, generous enough to comfortably hold real bay windows/porches on
+// an oddly-shaped plan while still catching content that's nowhere near it.
+const FOOTPRINT_OUTLIER_MARGIN_RATIO = 0.5;
 
 const ANNOTATION_TYPES = new Set(["DIMENSION", "HATCH", "TEXT", "MTEXT", "POINT", "ATTDEF", "ATTRIB", "VIEWPORT"]);
 const GEOMETRIC_TYPES = new Set(["LINE", "LWPOLYLINE", "POLYLINE", "CIRCLE", "ARC", "SPLINE", "3DFACE", "SOLID", "ELLIPSE"]);
@@ -214,6 +240,10 @@ function classifyInsert(insert: IInsertEntity, blocks: Record<string, IBlock>, s
   const position = scalePt(insert.position ?? { x: 0, y: 0 }, scale);
   const rotationDeg = insert.rotation ?? 0;
 
+  if (SYSTEM_BLOCK_RE.test(name)) {
+    return { type: "unclassified", layerName: layer, handle, label: `Internal AutoCAD block "${name}" (hatch/dimension associativity, not a real object)`, points: [position] };
+  }
+
   const raw = blockLocalBBox(blocks[insert.name]);
   const rawWidth = raw ? raw.maxX - raw.minX : 0;
   const rawDepth = raw ? raw.maxY - raw.minY : 0;
@@ -273,12 +303,44 @@ export function classifyDxf(dxf: IDxf, scale: number): ClassificationResult {
   const consumed = new Set<IEntity>();
   const out: ClassifiedEntity[] = [];
 
-  // 1. Walls (line-pairing for thickness).
+  // 1. Walls (line-pairing for thickness). Segments too short to be a real
+  // wall (see MIN_WALL_LENGTH_MM's doc — jamb reveals, plaster returns,
+  // other short line-pair artifacts) are kept out of the wall count and
+  // surfaced as unclassified instead of silently dropped.
   const wallSegs = extractWallSegments(entities, scale);
-  const walls = pairWallSegments(wallSegs);
+  const pairedWalls = pairWallSegments(wallSegs);
+  const walls = pairedWalls.filter((w) => dist(w.start, w.end) >= MIN_WALL_LENGTH_MM);
+  const tinyWallFragments = pairedWalls.filter((w) => dist(w.start, w.end) < MIN_WALL_LENGTH_MM);
   out.push(...walls);
+  for (const t of tinyWallFragments) {
+    out.push({
+      type: "unclassified",
+      layerName: t.layerName,
+      handle: t.handle,
+      label: `Wall fragment too short to be a real wall (${Math.round(dist(t.start, t.end))}mm — likely a jamb/reveal line, not a wall)`,
+      points: [t.start, t.end],
+    });
+  }
   for (const e of entities) {
     if (WALL_RE.test(e.layer ?? "") && (e.type === "LINE" || e.type === "LWPOLYLINE" || e.type === "POLYLINE")) consumed.add(e);
+  }
+
+  // The walls' own bounding box anchors "where this building actually is" —
+  // used below to catch door/window/column/furniture blocks that belong to
+  // some other part of the same DWG sheet (a schedule, a detail callout, a
+  // second floor plan sharing the same modelspace) rather than this one.
+  const wallFootprint = bbox(walls.flatMap((w) => [w.start, w.end]));
+  const footprintMarginMm = wallFootprint
+    ? Math.max(wallFootprint.maxX - wallFootprint.minX, wallFootprint.maxY - wallFootprint.minY) * FOOTPRINT_OUTLIER_MARGIN_RATIO
+    : 0;
+  function withinFootprint(p: Pt): boolean {
+    if (!wallFootprint) return true; // no wall geometry to anchor against — don't filter
+    return (
+      p.x >= wallFootprint.minX - footprintMarginMm &&
+      p.x <= wallFootprint.maxX + footprintMarginMm &&
+      p.y >= wallFootprint.minY - footprintMarginMm &&
+      p.y <= wallFootprint.maxY + footprintMarginMm
+    );
   }
 
   // 2. Rooms (closed polylines on a room/area layer) + label from any TEXT/MTEXT inside.
@@ -304,8 +366,20 @@ export function classifyDxf(dxf: IDxf, scale: number): ClassificationResult {
     if (e.type !== "INSERT") continue;
     consumed.add(e);
     const classified = classifyInsert(e as IInsertEntity, blocks, scale);
-    if (classified.type === "door") hasDoors = true;
-    if (classified.type === "window") hasWindows = true;
+    if (classified.type === "door" || classified.type === "window" || classified.type === "column" || classified.type === "furniture") {
+      if (!withinFootprint(classified.position)) {
+        out.push({
+          type: "unclassified",
+          layerName: classified.layerName,
+          handle: classified.handle,
+          label: `${classified.label} (far outside the building's walls — likely a different drawing/schedule on the same sheet)`,
+          points: [classified.position],
+        });
+        continue;
+      }
+      if (classified.type === "door") hasDoors = true;
+      if (classified.type === "window") hasWindows = true;
+    }
     out.push(classified);
   }
 
@@ -330,6 +404,14 @@ export function classifyDxf(dxf: IDxf, scale: number): ClassificationResult {
   }
   // Unmeasurable block instances (already pushed as "unclassified" in step 4) also count toward the total.
   unclassifiedCount += out.filter((o) => o.type === "unclassified" && o.label.startsWith('Block "')).length;
+  // Same for the three exclusion categories pushed directly to `out` in
+  // steps 1 and 4 (short wall fragments, AutoCAD system blocks, and
+  // footprint outliers) — they're excluded with confidence, not merely
+  // "couldn't tell what this is", but the "N entities couldn't be
+  // confidently classified" total should still reflect that they exist.
+  unclassifiedCount +=
+    tinyWallFragments.length +
+    out.filter((o) => o.type === "unclassified" && (o.label.startsWith("Internal AutoCAD block") || o.label.includes("far outside the building's walls"))).length;
 
   const entityCounts: Record<string, number> = {};
   for (const o of out) entityCounts[o.type] = (entityCounts[o.type] ?? 0) + 1;
