@@ -849,6 +849,13 @@ const ELEVATION_CLUSTER_GAP_MM = 1500;
 // elevation — almost certainly a stray detail/symbol that happened to
 // contain (or sit beside) matching title text.
 const MIN_ELEVATION_SIZE_MM = 1000;
+// A closed rectangle this small, on an otherwise door/window-named layer,
+// isn't the opening itself — a sill line or mullion detail drawn on the
+// same layer, not the door/window's own outer frame.
+const MIN_OPENING_RECT_SIZE_MM = 100;
+// "A door reaches the floor, a window doesn't" — see the doc where this is
+// used, below.
+const DOOR_FLOOR_TOUCH_TOLERANCE_MM = 150;
 
 function entityClusterPoints(e: IEntity): Pt[] {
   switch (e.type) {
@@ -995,6 +1002,45 @@ function measureElevationCluster(cluster: IEntity[], blocks: Record<string, IBlo
       widthMm: Math.round(rawWidth * Math.abs(insert.xScale ?? 1) * scale),
       heightMm: Math.round(rawHeight * Math.abs(insert.yScale ?? 1) * scale),
       kind: isDoor ? "door" : "window",
+    });
+  }
+
+  // A drawing doesn't always tag its openings as named INSERT blocks (the
+  // loop above) — a real reference file draws each window/door as a plain
+  // closed rectangle directly on its own "door and window" layer, no block
+  // involved at all. This reads the SAME layer-name signal the plan-view
+  // classifier already trusts for doors/windows (DOOR_RE/WINDOW_RE),
+  // applied here to the elevation's own closed rectangles instead of block
+  // instances — still reading what the file itself calls the layer, not
+  // guessing at the geometry's purpose. Kept alongside the strokes below
+  // (not excluded from them) rather than instead of them: the rectangle
+  // still traces as a raised outline (its frame), while ALSO cutting a real
+  // opening through the panel here, instead of a solid wall with a
+  // decorative outline on it.
+  //
+  // A layer that names BOTH categories together ("door and window", the
+  // real example this was built for) can't be told apart by name alone —
+  // DOOR_RE and WINDOW_RE both match it. Rather than guess from the name,
+  // this falls back to another real measurement instead of an assumption:
+  // a door reaches the floor, a window doesn't — so a rectangle whose own
+  // bottom edge sits within a hand's width of this elevation's ground line
+  // is called a door, everything else a window.
+  for (const rect of extractClosedPolylines(cluster, scale, /door|wind|glaz/i)) {
+    const rectBox = bbox(rect.points);
+    if (!rectBox) continue;
+    const rectWidthMm = rectBox.maxX - rectBox.minX;
+    const rectHeightMm = rectBox.maxY - rectBox.minY;
+    if (rectWidthMm < MIN_OPENING_RECT_SIZE_MM || rectHeightMm < MIN_OPENING_RECT_SIZE_MM) continue;
+    const isDoorOnly = DOOR_RE.test(rect.layerName) && !WINDOW_RE.test(rect.layerName);
+    const isWindowOnly = WINDOW_RE.test(rect.layerName) && !DOOR_RE.test(rect.layerName);
+    const zMm = rectBox.minY - box.minY;
+    const touchesFloor = zMm <= DOOR_FLOOR_TOUCH_TOLERANCE_MM;
+    openings.push({
+      xMm: Math.round(rectBox.minX - box.minX),
+      zMm: Math.round(zMm),
+      widthMm: Math.round(rectWidthMm),
+      heightMm: Math.round(rectHeightMm),
+      kind: isDoorOnly ? "door" : isWindowOnly ? "window" : touchesFloor ? "door" : "window",
     });
   }
 

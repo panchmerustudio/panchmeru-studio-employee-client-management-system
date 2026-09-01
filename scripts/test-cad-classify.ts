@@ -629,6 +629,69 @@ check(
   !!decoratedElevationViews[0] && decoratedElevationViews[0].strokes.every((s) => s.y1 !== 2500 && s.y2 !== 2500)
 );
 
+/*
+  Regression case for "see in this drawing only elevation is properly and
+  detailed explained" — MANPREET_SINGH_ELEVATION.dwg's real window/door
+  openings turned out to be drawn as plain closed rectangles directly on a
+  "door and window" layer, no INSERT block at all, which the INSERT-only
+  loop above never looks at. This exercises that same layer-based rectangle
+  path, including the ambiguous-layer-name ("door and window" matches both
+  DOOR_RE and WINDOW_RE) floor-touch disambiguation: a door reaches the
+  floor, a window doesn't.
+*/
+const layerRectElevationDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    { type: "LINE", layer: "wall", handle: 700, vertices: [{ x: 0, y: 0 }, { x: 6000, y: 0 }] },
+    { type: "LINE", layer: "wall", handle: 701, vertices: [{ x: 6000, y: 0 }, { x: 6000, y: 4000 }] },
+    { type: "LINE", layer: "wall", handle: 702, vertices: [{ x: 6000, y: 4000 }, { x: 0, y: 4000 }] },
+    { type: "LINE", layer: "wall", handle: 703, vertices: [{ x: 0, y: 4000 }, { x: 0, y: 0 }] },
+    { type: "MTEXT", layer: "TEXT", handle: 704, text: "FRONT ELEVATION", position: { x: 200, y: 200 } },
+    // A door: closed rectangle on the ambiguous "door and window" layer,
+    // reaching all the way down to the elevation's own floor line (y=0) —
+    // the floor-touch heuristic must call this a door despite the layer
+    // name matching WINDOW_RE too.
+    { type: "LWPOLYLINE", layer: "door and window", handle: 705, shape: true, vertices: [{ x: 1000, y: 0 }, { x: 1900, y: 0 }, { x: 1900, y: 2100 }, { x: 1000, y: 2100 }] },
+    // A window: same ambiguous layer, but sitting well above the floor —
+    // must be called a window by the same heuristic.
+    { type: "LWPOLYLINE", layer: "door and window", handle: 706, shape: true, vertices: [{ x: 3000, y: 1200 }, { x: 4200, y: 1200 }, { x: 4200, y: 2400 }, { x: 3000, y: 2400 }] },
+    // Too small to be a real opening (a sill/mullion detail on the same
+    // layer, not the opening's own outer frame) — must be excluded.
+    { type: "LWPOLYLINE", layer: "door and window", handle: 707, shape: true, vertices: [{ x: 5000, y: 3900 }, { x: 5050, y: 3900 }, { x: 5050, y: 3950 }, { x: 5000, y: 3950 }] },
+    // Genuinely open (not closed) — must NOT be read as an opening even
+    // though it's a large, floor-touching, door/window-layer rectangle
+    // shape (matches the real file's un-closed partial outlines).
+    { type: "LWPOLYLINE", layer: "door and window", handle: 708, shape: false, vertices: [{ x: 2000, y: 0 }, { x: 2900, y: 0 }, { x: 2900, y: 2000 }] },
+    // Unambiguous "window"-only layer name, but positioned at floor level —
+    // the layer name alone must win, not the floor-touch fallback (which
+    // only applies when the name itself is ambiguous).
+    { type: "LWPOLYLINE", layer: "WINDOW", handle: 709, shape: true, vertices: [{ x: 100, y: 0 }, { x: 700, y: 0 }, { x: 700, y: 1200 }, { x: 100, y: 1200 }] },
+  ],
+} as unknown as IDxf;
+const layerRectViews = extractElevationViews(layerRectElevationDxf, 1);
+const layerRectOpenings = layerRectViews[0]?.openings ?? [];
+check(
+  "layer-only rectangle openings: exactly 3 real openings recognized (2 on the ambiguous layer + 1 on an unambiguous layer), the too-small and open-shape rectangles excluded",
+  layerRectOpenings.length === 3
+);
+const layerRectDoor = layerRectOpenings.find((o) => o.xMm === 1000);
+const layerRectWindow = layerRectOpenings.find((o) => o.xMm === 3000);
+const layerRectNamedWindow = layerRectOpenings.find((o) => o.xMm === 100);
+check("layer-only rectangle: the floor-touching one on the ambiguous 'door and window' layer is classified as a door", layerRectDoor?.kind === "door");
+check("layer-only rectangle: its measured size matches the drawn rectangle (900x2100mm), not fabricated", layerRectDoor?.widthMm === 900 && layerRectDoor?.heightMm === 2100);
+check("layer-only rectangle: the one sitting above the floor on the same ambiguous layer is classified as a window", layerRectWindow?.kind === "window");
+check("layer-only rectangle: its measured size matches the drawn rectangle (1200x1200mm)", layerRectWindow?.widthMm === 1200 && layerRectWindow?.heightMm === 1200);
+check(
+  "layer-only rectangle: an unambiguous 'WINDOW'-only layer name wins even when the rectangle itself touches the floor — the floor-touch heuristic only applies when the name is genuinely ambiguous",
+  layerRectNamedWindow?.kind === "window"
+);
+check(
+  "layer-only rectangle: a too-small rectangle on the same layer (50x50mm) is excluded as a sill/mullion detail, not a real opening",
+  !layerRectOpenings.some((o) => o.widthMm === 50)
+);
+check("layer-only rectangle: a genuinely open (not closed) rectangle-shaped outline on the same layer is not read as an opening", !layerRectOpenings.some((o) => o.xMm === 2000));
+
 function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);
   if (!ok) process.exitCode = 1;

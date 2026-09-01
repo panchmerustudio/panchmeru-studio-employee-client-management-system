@@ -236,6 +236,52 @@ if (elevOnlyRelief instanceof THREE.Mesh) {
   check("traced strokes: relief stands proud by its stated (not measured) depth (200 + 15 = 215mm)", Math.abs(strokeBox.max.z * 1000 - 215) < 1);
 }
 
+/*
+  Regression case for "see in this drawing only elevation is properly and
+  detailed explained" — a real cut opening used to leave a black void in
+  the panel (no fill at all); buildElevationPanel now fills each one with a
+  glass pane (window) or a stained slab (door), sized and positioned to the
+  same opening rectangle that cut the hole.
+*/
+const elevOnlyWindowPane = findMesh(
+  elevOnlyGroup,
+  (m) => m instanceof THREE.Mesh && m.userData?.cadEntityId === "elev1" && typeof m.userData?.note === "string" && m.userData.note.includes("window glazing filled")
+);
+check("elevation-only panel: the window opening was filled with a glass pane, not left as a black void", !!elevOnlyWindowPane);
+if (elevOnlyWindowPane instanceof THREE.Mesh) {
+  const box = new THREE.Box3().setFromObject(elevOnlyWindowPane);
+  const size = box.getSize(new THREE.Vector3());
+  check("window pane size matches its own opening rectangle (1200x1500mm), not fabricated", Math.abs(size.x * 1000 - 1200) < 2 && Math.abs(size.y * 1000 - 1500) < 2);
+  // Positioned relative to the panel mesh's own left edge (elevOnlyBox.min.x
+  // = local x=0 in world space) rather than an assumed world origin — the
+  // whole panel group is itself offset by buildElevationPanel's placement
+  // logic (centered on the building footprint, or the origin when there's
+  // no floor plan at all — see its doc), so only the RELATIVE position
+  // within the panel is a real, fixture-independent measurement.
+  const panelLeftX = elevOnlyBox ? elevOnlyBox.min.x : 0;
+  check(
+    "window pane sits at the opening's own drawn position, relative to the panel's own left edge (x: 1000-2200mm)",
+    Math.abs((box.min.x - panelLeftX) * 1000 - 1000) < 2 && Math.abs((box.max.x - panelLeftX) * 1000 - 2200) < 2
+  );
+  const mat = elevOnlyWindowPane.material as THREE.MeshStandardMaterial;
+  check("window pane material is transparent (reads as glass, not a solid wall patch)", mat.transparent === true && mat.opacity < 1);
+}
+
+const elevOnlyDoorPane = findMesh(
+  elevOnlyGroup,
+  (m) => m instanceof THREE.Mesh && m.userData?.cadEntityId === "elev1" && typeof m.userData?.note === "string" && m.userData.note.includes("door opening filled")
+);
+check("elevation-only panel: the door opening was filled with a slab, not left as a black void", !!elevOnlyDoorPane);
+if (elevOnlyDoorPane instanceof THREE.Mesh) {
+  const box = new THREE.Box3().setFromObject(elevOnlyDoorPane);
+  const size = box.getSize(new THREE.Vector3());
+  check("door pane size matches its own opening rectangle (900x2100mm), not fabricated", Math.abs(size.x * 1000 - 900) < 2 && Math.abs(size.y * 1000 - 2100) < 2);
+  check("door pane reaches the floor (its own drawn zMm=0), matching a real door threshold", Math.abs(box.min.y) < 0.002);
+  const mat = elevOnlyDoorPane.material as THREE.MeshStandardMaterial;
+  check("door pane material is opaque (a slab, not glass)", mat.transparent !== true);
+}
+check("window pane and door pane are two distinct meshes, not the same one matched twice", elevOnlyWindowPane !== elevOnlyDoorPane);
+
 // Case B: elevation view combined with a real floor plan — the panel must
 // be offset in front of the building footprint (not overlapping the real
 // walls) per buildElevationPanel's placement doc, and the wall geometry

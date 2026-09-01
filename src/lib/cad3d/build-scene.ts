@@ -1130,6 +1130,10 @@ function buildElevationPanel(e: CadEntityInput, placement: { centerX: number; fr
   shape.lineTo(0, heightMm * MM);
   shape.closePath();
 
+  // Collected here (not built until after the panel mesh below exists) so
+  // an opening cuts its hole in the SAME pass that measures its clamped
+  // rectangle, instead of re-deriving x0/x1/z0/z1 a second time later.
+  const paneRects: { x0: number; x1: number; z0: number; z1: number; kind: string }[] = [];
   for (const o of geo.openings ?? []) {
     const x0 = Math.max(0, o.xMm),
       x1 = Math.min(widthMm, o.xMm + o.widthMm);
@@ -1143,6 +1147,7 @@ function buildElevationPanel(e: CadEntityInput, placement: { centerX: number; fr
     hole.lineTo(x0 * MM, z1 * MM);
     hole.closePath();
     shape.holes.push(hole);
+    paneRects.push({ x0, x1, z0, z1, kind: o.kind });
   }
 
   const geometry = new THREE.ExtrudeGeometry(shape, { depth: ELEVATION_PANEL_THICKNESS_MM * MM, bevelEnabled: false });
@@ -1174,6 +1179,36 @@ function buildElevationPanel(e: CadEntityInput, placement: { centerX: number; fr
     reliefMesh.receiveShadow = true;
     reliefMesh.userData = { cadEntityId: e.id, cadType: "elevation_panel", note: "traced from the source drawing's own line/arc geometry, given a stated (not measured) relief thickness" };
     group.add(reliefMesh);
+  }
+
+  // Real openings (the layer-based rectangle detection in classify.ts, or a
+  // tagged door/window block) cut an actual hole through the panel above —
+  // leaving it empty reads as a black void, not a window, so each hole gets
+  // filled with a plane sized exactly to it: a lightly tinted, mostly
+  // transparent glass pane for a window, or a plain flat slab (the same
+  // stained-wood tone buildDoorGroup already uses for a real plan-view
+  // door) for a door. Positioned at the panel's own mid-thickness — the
+  // drawing gives no depth for how deep-set the glazing/door actually sits
+  // within the wall, so this is a stated middle ground, not a measurement.
+  const paneDepthMm = ELEVATION_PANEL_THICKNESS_MM / 2;
+  for (const rect of paneRects) {
+    const w = (rect.x1 - rect.x0) * MM;
+    const h = (rect.z1 - rect.z0) * MM;
+    if (w < 0.01 || h < 0.01) continue;
+    const isDoor = rect.kind === "door";
+    const paneMaterial = isDoor
+      ? getKeyedMaterial("elevationDoorSlab", () => new THREE.MeshStandardMaterial({ color: 0x7a4a2a, roughness: 0.5, metalness: 0.02 }))
+      : getKeyedMaterial("elevationGlassPane", () => new THREE.MeshStandardMaterial({ color: 0xbfe0e8, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.4 }));
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(w, h), paneMaterial);
+    pane.position.set(rect.x0 * MM + w / 2, rect.z0 * MM + h / 2, paneDepthMm * MM);
+    pane.castShadow = !isDoor;
+    pane.receiveShadow = true;
+    pane.userData = {
+      cadEntityId: e.id,
+      cadType: "elevation_panel",
+      note: isDoor ? "door opening filled from the drawing's own measured opening — not a modeled door leaf" : "window glazing filled from the drawing's own measured opening",
+    };
+    group.add(pane);
   }
 
   group.position.set((placement.centerX - widthMm / 2) * MM, 0, placement.frontY * MM);

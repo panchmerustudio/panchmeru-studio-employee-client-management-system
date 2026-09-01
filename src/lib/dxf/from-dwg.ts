@@ -25,6 +25,24 @@
  *     not *Model_Space). Reading modelspace entities from the
  *     *Model_Space block record directly (tables.BLOCK_RECORD.entries)
  *     sidesteps that instead of trusting the flat list.
+ *  4. DWG LWPOLYLINE/POLYLINE2D/POLYLINE3D carry their "closed" state in a
+ *     numeric `flag` field, where DXF (and classify.ts's
+ *     extractClosedPolylines, isClosed-fallback aside) expects a `shape`
+ *     boolean — but the bit position is NOT the same for both entity
+ *     types, and neither matches plain DXF group-70 semantics uniformly.
+ *     Confirmed against libredwg's own dwg.h: POLYLINE2D/3D use bit 1
+ *     (matching DXF's group-70 "closed" bit, and dxf-parser's own
+ *     `(flag & 1) === 1`) — but LWPOLYLINE's `flag` is a DIFFERENT,
+ *     libredwg-internal bitmask that multiplexes "which optional field is
+ *     present" bits for its binary encoding, where CLOSED is bit 512, not
+ *     bit 1 (dwg.h: "512 closed, 128 plinegen, 4 constwidth, 8 elevation,
+ *     2 thickness, 1 extrusion, 16 num_bulges, 1024 vertexidcount, 32
+ *     has_widths"). Verified against a real file's window/door opening
+ *     rectangles: the 8 genuinely-closed 4-vertex ones all carried
+ *     flag===512, while malformed/open ones carried flag===0 — and their
+ *     first/last vertices sit hundreds to thousands of mm apart, so
+ *     without this bit they silently read as open polylines and are
+ *     dropped by every closed-polygon consumer in classify.ts.
  */
 import type { IDxf, IEntity, IBlock } from "dxf-parser";
 
@@ -53,11 +71,18 @@ function adaptEntity(e: AnyEntity): IEntity {
     case "LINE":
       return { ...e, vertices: [xy(e.startPoint), xy(e.endPoint)] } as unknown as IEntity;
     case "LWPOLYLINE":
-      return { ...e, vertices: ((e.vertices as unknown[]) ?? []).map(xy) } as unknown as IEntity;
+      // LWPOLYLINE's closed bit is 512, not 1 — see this file's doc comment above.
+      return { ...e, vertices: ((e.vertices as unknown[]) ?? []).map(xy), shape: (((e.flag as number) ?? 0) & 512) === 512 } as unknown as IEntity;
     case "POLYLINE2D":
     case "POLYLINE3D":
       // dxf-parser (and classify.ts) only know a single generic "POLYLINE" type.
-      return { ...e, type: "POLYLINE", vertices: ((e.vertices as unknown[]) ?? []).map(xy) } as unknown as IEntity;
+      // Unlike LWPOLYLINE, POLYLINE2D/3D's closed bit really is bit 1 — see this file's doc comment above.
+      return {
+        ...e,
+        type: "POLYLINE",
+        vertices: ((e.vertices as unknown[]) ?? []).map(xy),
+        shape: (((e.flag as number) ?? 0) & 1) === 1,
+      } as unknown as IEntity;
     case "ARC":
     case "CIRCLE":
       return { ...e, center: xy(e.center) } as unknown as IEntity;
