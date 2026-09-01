@@ -1039,7 +1039,7 @@ export type ViewPartition = {
  * plan+one-elevation file has zero or one, and returns null so callers
  * fall back to extractElevationViews' proximity-based approach unchanged.
  */
-export function partitionByViewTitles(dxf: IDxf, scale: number): ViewPartition | null {
+export function partitionByViewTitles(dxf: IDxf, scale: number, opts?: { preferredLevelKeyword?: string }): ViewPartition | null {
   const entities = dxf.entities ?? [];
   const blocks = dxf.blocks ?? {};
 
@@ -1108,15 +1108,28 @@ export function partitionByViewTitles(dxf: IDxf, scale: number): ViewPartition |
 
   const planIdxs = anchors.map((a, i) => i).filter((i) => anchors[i].kind === "plan");
   const eligiblePlanIdxs = planIdxs.filter((i) => anchors[i].levelRank <= PRIMARY_PLAN_MAX_RANK);
+  // A person can say which level they actually want modeled (see
+  // uploadCadModel's "Floor level" field) — matched against each
+  // candidate's own real title text, since that's the ground truth a
+  // person reading the drawing goes by. This searches ALL plan-kind
+  // candidates, not just the "eligible" ones below — PRIMARY_PLAN_MAX_RANK
+  // exists to stop the AUTOMATIC default from guessing a roof/site/terrace
+  // plan as if it were the building's main floor; it has no business
+  // blocking a person who explicitly asked for exactly that. An unmatched
+  // or absent preference falls through to the automatic default unchanged.
+  const preferred = opts?.preferredLevelKeyword?.trim().toLowerCase();
+  const preferredIdx = preferred ? planIdxs.find((i) => anchors[i].title.toLowerCase().includes(preferred)) : undefined;
   // No properly floor-numbered plan title at all (e.g. only a "SITE PLAN"
-  // or "ROOF PLAN" title exists) — don't attempt to pick a "primary" among
-  // non-interior drawings; leave every plan-kind group unexcluded so they
-  // all still feed the ordinary classifier together, same as before this
-  // partitioning existed.
-  const primaryIdx =
-    eligiblePlanIdxs.length > 0
-      ? eligiblePlanIdxs.reduce((best, i) => (anchors[i].levelRank < anchors[best].levelRank || (anchors[i].levelRank === anchors[best].levelRank && groups[i].length > groups[best].length) ? i : best))
-      : null;
+  // or "ROOF PLAN" title exists) and no explicit preference either — don't
+  // attempt to pick a "primary" among non-interior drawings; leave every
+  // plan-kind group unexcluded so they all still feed the ordinary
+  // classifier together, same as before this partitioning existed.
+  const primaryIdx: number | null =
+    preferredIdx !== undefined
+      ? preferredIdx
+      : eligiblePlanIdxs.length > 0
+        ? eligiblePlanIdxs.reduce((best, i) => (anchors[i].levelRank < anchors[best].levelRank || (anchors[i].levelRank === anchors[best].levelRank && groups[i].length > groups[best].length) ? i : best))
+        : null;
 
   const excludeHandles = new Set<string>();
   const otherLevelTitles: string[] = [];
@@ -1140,16 +1153,15 @@ export function partitionByViewTitles(dxf: IDxf, scale: number): ViewPartition |
       for (const e of group) excludeHandles.add(String(e.handle));
       continue;
     }
-    // plan-kind
-    if (i === primaryIdx) continue; // this is the one view left in, everything else in this loop gets excluded
+    // plan-kind — only exclude/count the OTHER plan groups once an actual
+    // primary was chosen (primaryIdx != null); when nothing was chosen
+    // (no eligible level and no matching preference), every plan-kind
+    // group is left alone, unexcluded, exactly as if this sheet had fewer
+    // than 2 titles at all.
+    if (primaryIdx == null || i === primaryIdx) continue;
     for (const e of group) excludeHandles.add(String(e.handle));
-    if (eligiblePlanIdxs.length > 0) {
-      // only count/name this as a genuine "other floor" when a primary WAS
-      // chosen — otherwise every plan group is left in (see primaryIdx
-      // above) and none of this is actually being excluded as a floor.
-      otherLevelTitles.push(anchor.title);
-      otherLevelEntityCount += group.length;
-    }
+    otherLevelTitles.push(anchor.title);
+    otherLevelEntityCount += group.length;
   }
 
   return {
@@ -1162,13 +1174,41 @@ export function partitionByViewTitles(dxf: IDxf, scale: number): ViewPartition |
 }
 
 /**
- * Single entry point for both dwg.ts and index.ts: tries the titled
- * multi-view partition first (see partitionByViewTitles), and only falls
- * back to the older single-elevation, proximity-based extraction when the
- * sheet doesn't carry enough of its own view titles to anchor that.
+ * Every piece of this pipeline up to here works from what the drawing
+ * itself says (a title, a layer name, a block name) — but a sheet with NO
+ * title text at all, or one worded in a way none of this recognizes, is
+ * genuinely ambiguous from the geometry alone. A person looking at it
+ * isn't ambiguous about it at all, so uploadCadModel offers an explicit
+ * "what kind of drawing is this" choice instead of forcing a guess:
+ *   "auto"      — today's behavior, entirely title-driven (default).
+ *   "plan"      — trust that it's a floor plan even if detectNonPlanDrawing
+ *                 would otherwise reject it on an elevation/section-sounding
+ *                 title found somewhere on the sheet; still doesn't fabricate
+ *                 walls that genuinely aren't there.
+ *   "elevation" — when no title-anchored elevation view could be found (see
+ *                 extractElevationViews/partitionByViewTitles), measure
+ *                 EVERY remaining entity as one whole-sheet elevation
+ *                 instead — this is what makes a genuinely untitled
+ *                 elevation-only file work at all, which no amount of
+ *                 smarter title-reading can do on its own.
  */
-export function extractViews(dxf: IDxf, scale: number): { elevationViews: ElevationView[]; excludeHandles?: Set<string>; otherLevelTitles: string[]; otherLevelEntityCount: number } {
-  const partition = partitionByViewTitles(dxf, scale);
+export type DeclaredDrawingType = "auto" | "plan" | "elevation";
+
+/**
+ * Single entry point for both dwg.ts and index.ts: tries the titled
+ * multi-view partition first (see partitionByViewTitles), falls back to
+ * the older single-elevation, proximity-based extraction when the sheet
+ * doesn't carry enough of its own view titles to anchor that, and — only
+ * for a declaredType of "elevation" that still found nothing — falls back
+ * once more to treating the whole sheet as one elevation (see this
+ * section's module doc above).
+ */
+export function extractViews(
+  dxf: IDxf,
+  scale: number,
+  opts?: { declaredType?: DeclaredDrawingType; preferredLevelKeyword?: string }
+): { elevationViews: ElevationView[]; excludeHandles?: Set<string>; otherLevelTitles: string[]; otherLevelEntityCount: number } {
+  const partition = partitionByViewTitles(dxf, scale, { preferredLevelKeyword: opts?.preferredLevelKeyword });
   if (partition) {
     return {
       elevationViews: partition.elevationViews,
@@ -1178,6 +1218,13 @@ export function extractViews(dxf: IDxf, scale: number): { elevationViews: Elevat
     };
   }
   const elevationViews = extractElevationViews(dxf, scale);
-  const excludeHandles = elevationViews.length > 0 ? new Set(elevationViews.flatMap((v) => [...v.memberHandles])) : undefined;
-  return { elevationViews, excludeHandles, otherLevelTitles: [], otherLevelEntityCount: 0 };
+  if (elevationViews.length > 0) {
+    const excludeHandles = new Set(elevationViews.flatMap((v) => [...v.memberHandles]));
+    return { elevationViews, excludeHandles, otherLevelTitles: [], otherLevelEntityCount: 0 };
+  }
+  if (opts?.declaredType === "elevation") {
+    const whole = measureElevationCluster(dxf.entities ?? [], dxf.blocks ?? {}, scale);
+    if (whole) return { elevationViews: [whole], excludeHandles: new Set(whole.memberHandles), otherLevelTitles: [], otherLevelEntityCount: 0 };
+  }
+  return { elevationViews: [], excludeHandles: undefined, otherLevelTitles: [], otherLevelEntityCount: 0 };
 }

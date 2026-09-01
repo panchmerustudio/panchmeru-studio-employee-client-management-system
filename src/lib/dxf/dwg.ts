@@ -1,6 +1,6 @@
 import "server-only";
 import { LibreDwg, Dwg_File_Type } from "@mlightcad/libredwg-web";
-import { classifyDxf, detectNonPlanDrawing, extractViews, type ClassificationResult, type ElevationView } from "./classify";
+import { classifyDxf, detectNonPlanDrawing, extractViews, type ClassificationResult, type ElevationView, type DeclaredDrawingType } from "./classify";
 import { resolveUnits, UNIT_TO_MM, type CadUnits, type UnitsResolution } from "./units";
 import { dwgDatabaseToIDxf, type DwgDatabaseLike } from "./from-dwg";
 
@@ -45,7 +45,8 @@ function countEntities(db: DwgDatabaseLike): number {
 
 export async function parseDwgBuffer(
   fileContent: ArrayBuffer,
-  units: CadUnits
+  units: CadUnits,
+  drawingHints?: { declaredType?: DeclaredDrawingType; preferredLevelKeyword?: string }
 ): Promise<{ result: ClassificationResult; unitsResolution: UnitsResolution; elevationViews: ElevationView[]; otherLevelTitles: string[]; otherLevelEntityCount: number }> {
   const libredwg = await getLibreDwg();
 
@@ -92,8 +93,10 @@ export async function parseDwgBuffer(
   // Isolate any elevation view(s), and any OTHER floor level's plan on the
   // same sheet, BEFORE plan classification runs, so none of that geometry
   // can get mis-paired into this floor's bogus "walls" — see extractViews'
-  // doc in classify.ts.
-  const { elevationViews, excludeHandles, otherLevelTitles, otherLevelEntityCount } = extractViews(dxf, scale);
+  // doc in classify.ts. drawingHints carries what a person explicitly said
+  // about the file (see uploadCadModel's "drawing type"/"floor level"
+  // fields) — used when the drawing's own titles can't answer that alone.
+  const { elevationViews, excludeHandles, otherLevelTitles, otherLevelEntityCount } = extractViews(dxf, scale, drawingHints);
   const result = classifyDxf(dxf, scale, { excludeHandles });
 
   // "recognize the type of drawing and work accordingly": a sheet with no
@@ -101,8 +104,10 @@ export async function parseDwgBuffer(
   // Now it's only rejected when no elevation view could be built from it
   // either — a real elevation-only upload succeeds with just the facade
   // panel instead (a genuinely section-only sheet still has nothing this
-  // codebase can build, so it keeps being rejected).
-  const nonPlanReason = detectNonPlanDrawing(dxf, result);
+  // codebase can build, so it keeps being rejected). A declared "plan"
+  // skips this rejection outright — a person who already knows what the
+  // drawing is shouldn't be second-guessed by a title-wording heuristic.
+  const nonPlanReason = drawingHints?.declaredType === "plan" ? null : detectNonPlanDrawing(dxf, result);
   if (nonPlanReason && elevationViews.length === 0) throw new Error(nonPlanReason);
   return { result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount };
 }

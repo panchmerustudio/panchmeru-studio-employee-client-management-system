@@ -18,7 +18,7 @@ import { requireUser, requirePermission } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
 import { registerUploadedFile, readStoredFile } from "@/lib/storage";
-import { parseDxfFile, looksLikeDxf, type CadUnits, type UnitsResolution, type ElevationView } from "@/lib/dxf";
+import { parseDxfFile, looksLikeDxf, type CadUnits, type UnitsResolution, type ElevationView, type DeclaredDrawingType } from "@/lib/dxf";
 import { parseDwgBuffer } from "@/lib/dxf/dwg";
 import type { ClassificationResult, ClassifiedEntity } from "@/lib/dxf/classify";
 
@@ -231,6 +231,15 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   const fileOriginalName = formData.get("fileOriginalName") as string | null;
   const units = (formData.get("units") as CadUnits | null) ?? "mm";
   const name = (formData.get("name") as string | null)?.trim() || fileOriginalName || "CAD import";
+  // What the uploader said this drawing is, and (for a multi-storey sheet)
+  // which level to model — see extractViews'/partitionByViewTitles' doc in
+  // classify.ts for how these are used. Both are optional hints on top of
+  // the automatic title-based recognition, never a replacement for it —
+  // "auto" (the default) is unaffected by anything below.
+  const declaredTypeRaw = formData.get("drawingType") as string | null;
+  const declaredType: DeclaredDrawingType = declaredTypeRaw === "plan" || declaredTypeRaw === "elevation" ? declaredTypeRaw : "auto";
+  const preferredLevelKeyword = (formData.get("floorLevel") as string | null)?.trim() || undefined;
+  const drawingHints = { declaredType, preferredLevelKeyword };
   if (!fileKey || !fileOriginalName) throw new Error("Choose and upload a DXF or DWG file first.");
   const lowerName = fileOriginalName.toLowerCase();
   const isDwg = lowerName.endsWith(".dwg");
@@ -271,7 +280,8 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       const buffer = await readStoredFile(fileKey);
       ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount } = await parseDwgBuffer(
         buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer,
-        units
+        units,
+        drawingHints
       ));
     } else {
       const buffer = await readStoredFile(fileKey);
@@ -279,7 +289,7 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       if (!looksLikeDxf(text)) {
         throw new Error("This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG.");
       }
-      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount } = parseDxfFile(text, units));
+      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount } = parseDxfFile(text, units, drawingHints));
     }
   } catch (err) {
     console.error("[cad] uploadCadModel failed:", err);
@@ -372,6 +382,8 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       elevationFloorHeightMm: elevationFloorHeightMm ?? null,
       otherLevelTitles,
       otherLevelEntityCount,
+      declaredType,
+      preferredLevelKeyword: preferredLevelKeyword ?? null,
     },
   });
   revalidatePath(`/projects/${projectId}/cad`);

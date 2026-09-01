@@ -1,11 +1,12 @@
 import "server-only";
 import DxfParser from "dxf-parser";
-import { classifyDxf, detectNonPlanDrawing, extractViews, type ClassificationResult, type ElevationView } from "./classify";
+import { classifyDxf, detectNonPlanDrawing, extractViews, type ClassificationResult, type ElevationView, type DeclaredDrawingType } from "./classify";
 import { resolveUnits, UNIT_TO_MM, type CadUnits, type UnitsResolution } from "./units";
 
 export function parseDxfFile(
   dxfText: string,
-  units: CadUnits
+  units: CadUnits,
+  drawingHints?: { declaredType?: DeclaredDrawingType; preferredLevelKeyword?: string }
 ): { result: ClassificationResult; unitsResolution: UnitsResolution; elevationViews: ElevationView[]; otherLevelTitles: string[]; otherLevelEntityCount: number } {
   const parser = new DxfParser();
   const dxf = parser.parseSync(dxfText);
@@ -15,8 +16,9 @@ export function parseDxfFile(
 
   // Isolate any elevation view(s), and any OTHER floor level's plan on the
   // same sheet, BEFORE plan classification runs — see extractViews' doc in
-  // classify.ts.
-  const { elevationViews, excludeHandles, otherLevelTitles, otherLevelEntityCount } = extractViews(dxf, scale);
+  // classify.ts. drawingHints carries what a person explicitly said about
+  // the file (see uploadCadModel's "drawing type"/"floor level" fields).
+  const { elevationViews, excludeHandles, otherLevelTitles, otherLevelEntityCount } = extractViews(dxf, scale, drawingHints);
   const result = classifyDxf(dxf, scale, { excludeHandles });
 
   // "recognize the type of drawing and work accordingly" — a plan-view
@@ -24,8 +26,9 @@ export function parseDxfFile(
   // real facade panel instead of being rejected. A genuinely section-only
   // (or elevation-titled-but-unextractable) sheet is still reported
   // clearly instead of silently producing an empty model — see
-  // detectNonPlanDrawing's doc in classify.ts.
-  const nonPlanReason = detectNonPlanDrawing(dxf, result);
+  // detectNonPlanDrawing's doc in classify.ts. A declared "plan" skips
+  // this rejection outright — see parseDwgBuffer's matching comment.
+  const nonPlanReason = drawingHints?.declaredType === "plan" ? null : detectNonPlanDrawing(dxf, result);
   if (nonPlanReason && elevationViews.length === 0) throw new Error(nonPlanReason);
   return { result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount };
 }
@@ -38,4 +41,4 @@ export function looksLikeDxf(text: string) {
 
 export { classifyDxf, UNIT_TO_MM };
 export type { CadUnits, UnitsResolution } from "./units";
-export type { ClassificationResult, ClassifiedEntity, ElevationView, ElevationOpening } from "./classify";
+export type { ClassificationResult, ClassifiedEntity, ElevationView, ElevationOpening, DeclaredDrawingType } from "./classify";

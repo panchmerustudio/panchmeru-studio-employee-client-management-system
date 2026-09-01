@@ -457,6 +457,104 @@ check(
 );
 
 /*
+  Regression case for "user has to mention what type of drawing it is,
+  then the tool must work and generate properly" — a person can name which
+  level they actually want (see uploadCadModel's "Floor level" field),
+  overriding the automatic ground-preferred default. Reusing the same
+  multi-storey fixture: without a preference, GROUND wins (already checked
+  above); with "first" as the preference, FIRST FLOOR PLAN must win instead.
+*/
+const firstPreferredPartition = partitionByViewTitles(multiStoreyDxf, 1, { preferredLevelKeyword: "first" });
+check("preferred level override: asking for \"first\" picks FIRST FLOOR PLAN instead of the default GROUND", firstPreferredPartition?.primaryPlanTitle === "FIRST FLOOR PLAN");
+check(
+  "preferred level override: GROUND FLOOR PLAN is now the one excluded as an \"other level\" instead",
+  !!firstPreferredPartition?.otherLevelTitles.includes("GROUND FLOOR PLAN") && !firstPreferredPartition?.otherLevelTitles.includes("FIRST FLOOR PLAN")
+);
+// An unmatched preference (no plan title contains it) falls back to the
+// ordinary rank-based default rather than leaving nothing modeled.
+const unmatchedPreferredPartition = partitionByViewTitles(multiStoreyDxf, 1, { preferredLevelKeyword: "second" });
+check("preferred level override: an unmatched preference (no \"second\" floor exists) falls back to the default GROUND", unmatchedPreferredPartition?.primaryPlanTitle === "GROUND FLOOR PLAN");
+
+/*
+  A real reference file has a "TERRACEFLOOR PLAN" — a genuinely inhabited
+  level (it has its own BEDROOM/TOILET room labels), not just a roof deck —
+  ranked high (100) specifically so the AUTOMATIC default never guesses it
+  over a proper ground/first floor. That guard must not also block a
+  person who explicitly asks for the terrace: preferredLevelKeyword
+  searches every plan-kind candidate, eligible or not.
+*/
+const groundPlusTerraceDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    ...levelWalls(700, 0),
+    { type: "MTEXT", layer: "TEXT", handle: 710, text: mtextTitle("GROUND FLOOR PLAN"), position: { x: 0, y: 0 } },
+    ...levelWalls(720, 3000),
+    { type: "MTEXT", layer: "TEXT", handle: 730, text: mtextTitle("TERRACE FLOOR PLAN"), position: { x: 0, y: 3000 } },
+  ],
+} as unknown as IDxf;
+check("no preference: GROUND (rank 0) beats TERRACE (rank 100) as the automatic default", partitionByViewTitles(groundPlusTerraceDxf, 1)?.primaryPlanTitle === "GROUND FLOOR PLAN");
+const terracePreferredPartition = partitionByViewTitles(groundPlusTerraceDxf, 1, { preferredLevelKeyword: "terrace" });
+check(
+  "explicit preference reaches a high-ranked (rank>5) level too: asking for \"terrace\" picks it despite GROUND being the automatic default",
+  terracePreferredPartition?.primaryPlanTitle === "TERRACE FLOOR PLAN"
+);
+
+/*
+  Regression case for a real bug caught while verifying the above against
+  the actual reference file: when NO plan-kind title is eligible to be an
+  automatic primary (e.g. a sheet with only a "ROOF PLAN" and a "SITE
+  PLAN" — both rank>5 — and no explicit preference), primaryIdx is
+  correctly null... but the exclusion loop's "if (i === primaryIdx)
+  continue" only skips index === primaryIdx: since no real array index
+  ever equals `null`, EVERY plan-kind group was being excluded instead of
+  NONE, the opposite of "leave every plan-kind group unexcluded" this
+  section's own doc comment promises. Fixed to gate exclusion on
+  `primaryIdx == null` explicitly rather than relying on that comparison.
+*/
+const noEligiblePlanDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    ...levelWalls(800, 0),
+    { type: "MTEXT", layer: "TEXT", handle: 810, text: mtextTitle("ROOF PLAN"), position: { x: 0, y: 0 } },
+    ...levelWalls(820, 3000),
+    { type: "MTEXT", layer: "TEXT", handle: 830, text: mtextTitle("SITE PLAN"), position: { x: 0, y: 3000 } },
+  ],
+} as unknown as IDxf;
+const noEligiblePartition = partitionByViewTitles(noEligiblePlanDxf, 1);
+check("no eligible plan title (only ROOF PLAN + SITE PLAN) and no preference: no primary chosen", noEligiblePartition?.primaryPlanTitle === null);
+check("no eligible plan title: neither plan group gets excluded (both keep feeding the ordinary classifier)", noEligiblePartition?.excludeHandles.size === 0);
+const noEligibleResult = classifyDxf(noEligiblePlanDxf, 1, { excludeHandles: noEligiblePartition?.excludeHandles });
+check("no eligible plan title: both levels' walls (2+2=4) are still modeled, none silently dropped", noEligibleResult.entityCounts.wall === 4);
+
+/*
+  Regression case for the other half of the same request: a person can say
+  "this whole file IS an elevation" even when it carries no title text at
+  all (so extractElevationViews' own title-anchored search finds nothing)
+  — extractViews' declaredType: "elevation" then measures every entity on
+  the sheet as one whole-sheet elevation instead of the upload just being
+  rejected outright.
+*/
+const untitledElevationDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    { type: "LINE", layer: "0", handle: 700, vertices: [{ x: 0, y: 0 }, { x: 6000, y: 0 }] },
+    { type: "LINE", layer: "0", handle: 701, vertices: [{ x: 6000, y: 0 }, { x: 6000, y: 3500 }] },
+    { type: "LINE", layer: "0", handle: 702, vertices: [{ x: 6000, y: 3500 }, { x: 0, y: 3500 }] },
+    { type: "LINE", layer: "0", handle: 703, vertices: [{ x: 0, y: 3500 }, { x: 0, y: 0 }] },
+  ],
+} as unknown as IDxf;
+check("untitled elevation sheet, declaredType auto: extractViews finds nothing (no title to anchor on)", extractViews(untitledElevationDxf, 1).elevationViews.length === 0);
+const declaredElevationViews = extractViews(untitledElevationDxf, 1, { declaredType: "elevation" });
+check("untitled elevation sheet, declaredType \"elevation\": builds one whole-sheet view instead of finding nothing", declaredElevationViews.elevationViews.length === 1);
+check(
+  "untitled elevation sheet, declaredType \"elevation\": sized from the sheet's own real extent (6000x3500mm)",
+  declaredElevationViews.elevationViews[0]?.widthMm === 6000 && declaredElevationViews.elevationViews[0]?.heightMm === 3500
+);
+
+/*
   A single-plan (or plan+one-elevation) sheet — the overwhelming common
   case — has 0 or 1 view titles, not >= 2, so partitionByViewTitles must
   stay OUT of the way entirely and let extractElevationViews' proximity
