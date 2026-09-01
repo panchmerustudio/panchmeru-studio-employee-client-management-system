@@ -4,7 +4,7 @@
  * which is dxf-parser's own well-tested job — the real risk here is our
  * classification/geometry logic). Run with: npx tsx scripts/test-cad-classify.ts
  */
-import { classifyDxf, detectNonPlanDrawing, type ClassifiedOpening, type ClassifiedFurniture } from "../src/lib/dxf/classify";
+import { classifyDxf, detectNonPlanDrawing, extractElevationViews, type ClassifiedOpening, type ClassifiedFurniture } from "../src/lib/dxf/classify";
 import type { IDxf } from "dxf-parser";
 
 function rectBlockEntities(w: number, h: number) {
@@ -266,6 +266,102 @@ check(
   `oversized-arc fixture measured close to its real 400x600mm footprint, not inflated by the arc's full-circle bbox (got ${wcFixture?.widthMm}x${wcFixture?.depthMm})`,
   !!wcFixture && wcFixture.widthMm <= 410 && wcFixture.depthMm <= 610
 );
+
+/*
+  Regression case: a genuinely elevation-only sheet (no real floor plan at
+  all) now succeeds via extractElevationViews instead of being rejected
+  outright — see the module doc in classify.ts. The geometry here is a
+  simple connected rectangle outline (each LINE's endpoint touches the
+  next) with a title positioned near one of its own corners — real
+  drawings have far denser, naturally-connected point clouds (see
+  clusterEntitiesByProximity's doc), so this synthetic fixture just needs
+  to be connected the same deliberate way for the proximity clustering to
+  actually group it as one view.
+*/
+const pureElevationDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    { type: "LINE", layer: "A-ELEV", handle: 500, vertices: [{ x: 0, y: 0 }, { x: 8000, y: 0 }] },
+    { type: "LINE", layer: "A-ELEV", handle: 501, vertices: [{ x: 8000, y: 0 }, { x: 8000, y: 3000 }] },
+    { type: "LINE", layer: "A-ELEV", handle: 502, vertices: [{ x: 8000, y: 3000 }, { x: 0, y: 3000 }] },
+    { type: "LINE", layer: "A-ELEV", handle: 503, vertices: [{ x: 0, y: 3000 }, { x: 0, y: 0 }] },
+    { type: "MTEXT", layer: "A-TEXT", handle: 504, text: "FRONT ELEVATION", position: { x: 200, y: 200 } },
+  ],
+} as unknown as IDxf;
+const pureElevationViews = extractElevationViews(pureElevationDxf, 1);
+check("elevation-only sheet: extractElevationViews finds exactly one view", pureElevationViews.length === 1);
+check("elevation-only sheet: view size matches the drawn rectangle (8000x3000mm)", pureElevationViews[0]?.widthMm === 8000 && pureElevationViews[0]?.heightMm === 3000);
+
+const pureElevationExclude = pureElevationViews.length > 0 ? new Set(pureElevationViews.flatMap((v) => [...v.memberHandles])) : undefined;
+const pureElevationResult = classifyDxf(pureElevationDxf, 1, { excludeHandles: pureElevationExclude });
+const pureElevationNonPlanReason = detectNonPlanDrawing(pureElevationDxf, pureElevationResult);
+check(
+  "elevation-only sheet: still no usable plan-view walls (as expected) but a real elevation view WAS extracted — this is the condition callers (dwg.ts/index.ts) use to build the facade panel instead of rejecting the upload",
+  !!pureElevationNonPlanReason && pureElevationViews.length === 1
+);
+
+/*
+  Regression case: a sheet with a real (if minimal) floor plan AND a
+  separate elevation view sharing the same "wall"-named layer — the
+  elevation's own line work must NOT get pulled into the floor plan's wall
+  count. A real reference DWG did exactly this: an elevation's dense
+  line/arc texture, drawn on the "wall" layer, was mis-paired by the same
+  line-pairing heuristic that finds real walls, producing a bogus "floor
+  plan" that was actually just the elevation's own artwork misread as
+  rooms. extractElevationViews isolates the elevation cluster by REAL-
+  WORLD PROXIMITY (not layer name), so classifyDxf, called with that
+  cluster's handles excluded, only pairs the real plan's own wall lines.
+*/
+const combinedPlanElevationDxf = {
+  header: {},
+  blocks: { DOOR_900: { name: "DOOR_900", entities: rectBlockEntities(900, 50) } },
+  entities: [
+    // A minimal real 2-wall plan corner near the origin.
+    { type: "LINE", layer: "A-WALL", handle: 400, vertices: [{ x: 0, y: 0 }, { x: 3000, y: 0 }] },
+    { type: "LINE", layer: "A-WALL", handle: 401, vertices: [{ x: 0, y: 200 }, { x: 3000, y: 200 }] },
+    { type: "LINE", layer: "A-WALL", handle: 402, vertices: [{ x: 0, y: 0 }, { x: 0, y: 3000 }] },
+    { type: "LINE", layer: "A-WALL", handle: 403, vertices: [{ x: 200, y: 0 }, { x: 200, y: 3000 }] },
+
+    // A separate elevation view, 50m away in X. Its own close line pair
+    // sits on the SAME "wall"-named layer as the real plan (mirroring the
+    // real reference file) and, left un-excluded, gets mis-paired into a
+    // bogus extra "wall" that isn't part of any real building.
+    { type: "LINE", layer: "wall", handle: 410, vertices: [{ x: 50000, y: 0 }, { x: 58000, y: 0 }] },
+    { type: "LINE", layer: "wall", handle: 411, vertices: [{ x: 50000, y: 150 }, { x: 58000, y: 150 }] },
+    // Non-"wall"-layer geometry (a roofline) extending the elevation's real
+    // height — clustered into the SAME view by proximity regardless of its
+    // own layer name, same as the real reference file's dense texture work.
+    { type: "LINE", layer: "roof", handle: 414, vertices: [{ x: 50000, y: 150 }, { x: 50000, y: 3000 }] },
+    { type: "LINE", layer: "roof", handle: 415, vertices: [{ x: 50000, y: 3000 }, { x: 58000, y: 3000 }] },
+    { type: "MTEXT", layer: "TEXT", handle: 412, text: "FRONT ELEVATION", position: { x: 50050, y: 200 } },
+    // A door drawn within the elevation, for opening extraction.
+    { type: "INSERT", layer: "door and window", handle: 413, name: "DOOR_900", position: { x: 50000, y: 0 }, rotation: 0, xScale: 1, yScale: 1 },
+  ],
+} as unknown as IDxf;
+
+const combinedElevationViews = extractElevationViews(combinedPlanElevationDxf, 1);
+check("combined sheet: exactly one elevation view extracted", combinedElevationViews.length === 1);
+check(
+  "combined sheet: view bbox matches the elevation's real extent (8000x3000mm), not the whole 58000-wide sheet",
+  combinedElevationViews[0]?.widthMm === 8000 && combinedElevationViews[0]?.heightMm === 3000
+);
+check(
+  "combined sheet: elevation view captured 1 door opening from its own DOOR_900 insert",
+  combinedElevationViews[0]?.openings.length === 1 && combinedElevationViews[0]?.openings[0]?.kind === "door"
+);
+
+const combinedResultWithoutExclusion = classifyDxf(combinedPlanElevationDxf, 1);
+const wallsWithoutExclusion = combinedResultWithoutExclusion.entities.filter((e) => e.type === "wall");
+check(
+  "combined sheet WITHOUT exclusion: the elevation's own close line pair DOES get mis-paired as a bogus extra wall (demonstrates why exclusion matters)",
+  wallsWithoutExclusion.length === 3
+);
+
+const combinedExclude = new Set(combinedElevationViews.flatMap((v) => [...v.memberHandles]));
+const combinedResultWithExclusion = classifyDxf(combinedPlanElevationDxf, 1, { excludeHandles: combinedExclude });
+const wallsWithExclusion = combinedResultWithExclusion.entities.filter((e) => e.type === "wall");
+check("combined sheet WITH elevation excluded: only the real plan's 2 walls remain", wallsWithExclusion.length === 2);
 
 function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);

@@ -18,11 +18,22 @@ import { requireUser, requirePermission } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
 import { registerUploadedFile, readStoredFile } from "@/lib/storage";
-import { parseDxfFile, looksLikeDxf, type CadUnits, type UnitsResolution } from "@/lib/dxf";
+import { parseDxfFile, looksLikeDxf, type CadUnits, type UnitsResolution, type ElevationView } from "@/lib/dxf";
 import { parseDwgBuffer } from "@/lib/dxf/dwg";
 import type { ClassificationResult, ClassifiedEntity } from "@/lib/dxf/classify";
 
 const FURNITURE_PLACEHOLDER_HEIGHT_MM = 750; // footprint-only mass (Phase 1 has no 3D furniture library yet) — never presented as a real furniture height
+
+// An elevation view's own measured height (see extractElevationViews in
+// classify.ts) is a REAL measurement, not a guess — but only worth using as
+// this building's floor-to-ceiling height when it's plausibly a single
+// storey's worth. A file drawn as a taller multi-storey elevation (this
+// codebase doesn't model multiple storeys yet) would otherwise silently
+// apply its WHOLE height as if it were one floor's, which is a genuine
+// misapplication of a true number, not merely an invented one — so outside
+// this range the ordinary floor_height missing-input question is asked
+// instead, exactly as if no elevation existed.
+const PLAUSIBLE_FLOOR_HEIGHT_MM = { min: 2200, max: 4500 };
 
 type MissingInputSpec = { kind: "floor_height" | "door_height" | "window_height" | "window_sill_height" | "wall_default_thickness"; question: string };
 
@@ -199,6 +210,18 @@ function entityToRow(modelId: string, e: ClassifiedEntity) {
   }
 }
 
+function elevationViewToRow(modelId: string, view: ElevationView) {
+  return {
+    modelId,
+    type: "elevation_panel" as const,
+    layerName: "0",
+    geometry: { widthMm: view.widthMm, heightMm: view.heightMm, openings: view.openings },
+    widthMm: view.widthMm,
+    depthMm: view.heightMm, // this row has no plan position, so widthMm/depthMm double as the panel's own width/height rather than a footprint
+    heightMm: null,
+  };
+}
+
 export async function uploadCadModel(projectId: string, formData: FormData) {
   const actor = await requirePermission(PERMISSIONS.CAD_CREATE);
   const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
@@ -235,6 +258,7 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   // readable `parseError`, whichever format the file was.
   let result: ClassificationResult;
   let unitsResolution: UnitsResolution;
+  let elevationViews: ElevationView[];
   try {
     if (isDwg) {
       // DWG is Autodesk's proprietary binary format, but read directly here
@@ -243,14 +267,14 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       // is avoided) and its doc comment for the GPL-3.0 licensing note on
       // the parser this uses.
       const buffer = await readStoredFile(fileKey);
-      ({ result, unitsResolution } = await parseDwgBuffer(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer, units));
+      ({ result, unitsResolution, elevationViews } = await parseDwgBuffer(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer, units));
     } else {
       const buffer = await readStoredFile(fileKey);
       const text = buffer.toString("utf-8");
       if (!looksLikeDxf(text)) {
         throw new Error("This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG.");
       }
-      ({ result, unitsResolution } = parseDxfFile(text, units));
+      ({ result, unitsResolution, elevationViews } = parseDxfFile(text, units));
     }
   } catch (err) {
     console.error("[cad] uploadCadModel failed:", err);
@@ -275,13 +299,26 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   const unitsOverridden = unitsResolution.source === "file";
   const displayName = unitsOverridden ? `${name} (units auto-corrected: ${unitsResolution.requested} → ${unitsResolution.effective})` : name;
 
+  // An elevation view's own measured height stands in for the floor_height
+  // missing-input's DEFAULT when it's plausibly a single storey (see
+  // PLAUSIBLE_FLOOR_HEIGHT_MM's doc) — a real measurement beats an assumed
+  // default. This still goes through the normal cadMissingInputs row (with
+  // a question that says so) rather than being applied invisibly, so it
+  // stays reviewable/editable from the model page exactly like every other
+  // assumed value — "never invented" cuts both ways: silently overriding
+  // floor height with no visible trace would be just as opaque as guessing.
+  const elevationFloorHeightMm = elevationViews.find((v) => v.heightMm >= PLAUSIBLE_FLOOR_HEIGHT_MM.min && v.heightMm <= PLAUSIBLE_FLOOR_HEIGHT_MM.max)?.heightMm;
+  const valueForSpec = (s: MissingInputSpec) => (s.kind === "floor_height" && elevationFloorHeightMm != null ? elevationFloorHeightMm : DEFAULT_MM[s.kind]);
+
   // "Needs info" no longer blocks 3D generation — see DEFAULT_MM/
   // applyMissingInputValue above. The model goes straight to "ready" and
   // every measurement a plan-view drawing can't contain gets a sensible,
   // commonly-correct default applied automatically; a person can still
   // review and change any of them afterwards from the model page, they
   // just never have to before seeing a model.
-  const missingSpecs = buildMissingInputs(result);
+  const missingSpecs = buildMissingInputs(result).map((s) =>
+    s.kind === "floor_height" && elevationFloorHeightMm != null ? { ...s, question: "Floor-to-ceiling height, measured from the elevation view in this file." } : s
+  );
   const [model] = await db
     .insert(cadModels)
     .values({
@@ -290,7 +327,7 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       sourceFileId: savedFile.id,
       units: unitsResolution.effective,
       status: "ready",
-      entityCounts: result.entityCounts,
+      entityCounts: elevationViews.length > 0 ? { ...result.entityCounts, elevation_view: elevationViews.length } : result.entityCounts,
       unclassifiedCount: result.unclassifiedCount,
       ignoredAnnotationCount: result.ignoredAnnotationCount,
       createdBy: actor.id,
@@ -300,10 +337,13 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   if (result.entities.length > 0) {
     await db.insert(cadEntities).values(result.entities.map((e) => entityToRow(model.id, e)));
   }
+  if (elevationViews.length > 0) {
+    await db.insert(cadEntities).values(elevationViews.map((v) => elevationViewToRow(model.id, v)));
+  }
   if (missingSpecs.length > 0) {
-    for (const s of missingSpecs) await applyMissingInputValue(model.id, s.kind, DEFAULT_MM[s.kind]);
+    for (const s of missingSpecs) await applyMissingInputValue(model.id, s.kind, valueForSpec(s));
     await db.insert(cadMissingInputs).values(
-      missingSpecs.map((s) => ({ modelId: model.id, kind: s.kind, question: s.question, resolvedValueMm: DEFAULT_MM[s.kind], resolvedAt: new Date() }))
+      missingSpecs.map((s) => ({ modelId: model.id, kind: s.kind, question: s.question, resolvedValueMm: valueForSpec(s), resolvedAt: new Date() }))
     );
   }
 
@@ -316,7 +356,9 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       entityCounts: result.entityCounts,
       unclassifiedCount: result.unclassifiedCount,
       unitsResolution,
-      autoAssumedDefaults: Object.fromEntries(missingSpecs.map((s) => [s.kind, DEFAULT_MM[s.kind]])),
+      autoAssumedDefaults: Object.fromEntries(missingSpecs.map((s) => [s.kind, valueForSpec(s)])),
+      elevationViews: elevationViews.map((v) => ({ widthMm: v.widthMm, heightMm: v.heightMm, openings: v.openings.length })),
+      elevationFloorHeightMm: elevationFloorHeightMm ?? null,
     },
   });
   revalidatePath(`/projects/${projectId}/cad`);

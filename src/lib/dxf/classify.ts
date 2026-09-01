@@ -489,8 +489,15 @@ function collectTexts(entities: IEntity[], scale: number) {
   return texts;
 }
 
-export function classifyDxf(dxf: IDxf, scale: number): ClassificationResult {
-  const entities = dxf.entities ?? [];
+export function classifyDxf(dxf: IDxf, scale: number, opts?: { excludeHandles?: Set<string> }): ClassificationResult {
+  // excludeHandles lets a caller remove an already-identified elevation
+  // view's own entities before plan-view classification runs — see
+  // extractElevationViews' doc above. Without this, an elevation's own
+  // line/arc texture work (drawn on the same "wall"-named layer as real
+  // walls, in at least one real reference file) gets mis-paired into
+  // bogus "walls" that don't belong to any real floor plan.
+  const excludeHandles = opts?.excludeHandles;
+  const entities = (dxf.entities ?? []).filter((e) => !excludeHandles?.has(String(e.handle)));
   const blocks = dxf.blocks ?? {};
   const consumed = new Set<IEntity>();
   const out: ClassifiedEntity[] = [];
@@ -635,22 +642,30 @@ export function classifyDxf(dxf: IDxf, scale: number): ClassificationResult {
   ---- Drawing-type sanity check: floor plan vs. elevation/section ----
   Everything above only knows how to build 3D from a PLAN-VIEW floor
   layout — walls seen from directly above, with doors/windows cut into
-  them. An elevation (a front-on view of a facade) or a section (a
-  vertical cut-through) uses completely different drafting conventions —
-  no walkable wall network at all, just outlines and hatching — and
-  forcing one through the plan-view classifier above wouldn't produce a
-  wrong model, it'd produce an empty or near-empty one with no obvious
-  explanation why. Real architectural sheets conventionally title each
-  view with a large TEXT/MTEXT label near it ("FRONT ELEVATION",
-  "SECTION A-A", ...) — that's a reliable signal, but only paired with
-  confirming the plan-view classifier above found essentially no usable
-  wall structure. A sheet that has BOTH a floor plan and, say, a small
-  elevation inset always keeps being modeled normally, because the
-  wall-count half of this check won't fire — this only ever blocks a
-  sheet that's actually unusable as-is, never one that merely mentions
-  "elevation" somewhere on it.
+  them. A section (a vertical cut-through) uses a completely different
+  drafting convention — no walkable wall network at all — and forcing one
+  through the plan-view classifier above wouldn't produce a wrong model,
+  it'd produce an empty or near-empty one with no obvious explanation why.
+  Real architectural sheets conventionally title each view with a large
+  TEXT/MTEXT label near it ("FRONT ELEVATION", "SECTION A-A", ...) — that's
+  a reliable signal, but only paired with confirming the plan-view
+  classifier above found essentially no usable wall structure. A sheet
+  that has BOTH a floor plan and, say, a small elevation inset always
+  keeps being modeled normally, because the wall-count half of this check
+  won't fire — this only ever blocks a sheet that's actually unusable
+  as-is, never one that merely mentions "elevation"/"section" somewhere.
+
+  Elevation specifically is no longer a hard rejection — see
+  extractElevationViews below, which builds a real (if simplified) 3D
+  facade panel from an elevation view instead. detectNonPlanDrawing stays
+  as the fallback: a genuine section-only sheet still has nothing this
+  codebase can build from, and an elevation-titled sheet whose geometry
+  extractElevationViews couldn't confidently isolate (see its own doc)
+  falls back to this same clear rejection rather than silently producing
+  nothing.
 */
-const ELEVATION_OR_SECTION_TITLE_RE = /\belevations?\b|\bsection\s+[a-z]\s*[-–—]\s*[a-z]\b|\bcross[\s-]section\b/i;
+const ELEVATION_TITLE_RE = /\belevations?\b/i;
+const SECTION_TITLE_RE = /\bsection\s+[a-z]\s*[-–—]\s*[a-z]\b|\bcross[\s-]section\b/i;
 const MIN_WALLS_FOR_PLAN_VIEW = 2;
 
 export function detectNonPlanDrawing(dxf: IDxf, result: ClassificationResult): string | null {
@@ -662,9 +677,220 @@ export function detectNonPlanDrawing(dxf: IDxf, result: ClassificationResult): s
     else if (e.type === "MTEXT") raw = (e as IMtextEntity).text;
     if (!raw) continue;
     const clean = raw.replace(/\\P/g, " ").trim();
-    if (ELEVATION_OR_SECTION_TITLE_RE.test(clean)) {
+    if (ELEVATION_TITLE_RE.test(clean) || SECTION_TITLE_RE.test(clean)) {
       return `This looks like an elevation or section drawing ("${clean}"), not a floor plan — no usable wall layout was found on it. The 3D modeler builds from a plan-view floor layout (walls, doors, and windows seen from directly above); upload that drawing instead, or export just the floor plan sheet as its own DXF.`;
     }
   }
   return null;
+}
+
+/*
+  ---- Elevation view -> flat facade panel ----
+  A DWG/DXF sheet very often carries more than one view in one shared
+  modelspace — a floor plan AND a front elevation, sometimes literally
+  spatially interleaved rather than tucked in a tidy corner (confirmed
+  against a real reference file: an elevation's own dense line/arc
+  texture work sat immediately next to that same building's room labels,
+  with nothing as simple as "everything left of X is the elevation").
+  What DOES reliably separate one drawn view from another is DRAWING
+  CONNECTIVITY, not raw distance from a title: within one view, entities
+  sit close enough to visually touch/nearly-touch; between two different
+  views on the same sheet, there's a real gap — even when both sit inside
+  the same loose neighborhood. clusterEntitiesByProximity below groups
+  entities into connected components using a tight real-world gap
+  (ELEVATION_CLUSTER_GAP_MM), verified against that same reference file to
+  cleanly split a 2686-entity elevation cluster (zero room-label text
+  inside it) from separate, smaller clusters that DID contain real room
+  labels — where a much looser "how far from the title text" radius had
+  wrongly swept nearly the whole drawing into one blob.
+
+  What this deliberately does NOT attempt: tracing the elevation's real
+  roofline/silhouette shape from its raw line/arc soup (unreliable and
+  drafting-style-dependent — see the module-level "never invented, only
+  measured" principle) or reconstructing multi-storey floor divisions.
+  The panel this produces is the elevation's own measured bounding
+  rectangle (a real, honest measurement) with door/window cutouts ONLY
+  where the source file tags them with a recognizable door/window
+  block/layer name — a file that draws elevation openings as bare,
+  untagged line rectangles (as the same reference file does) yields a
+  plain rectangular panel rather than a guessed cutout.
+*/
+export type ElevationOpening = { xMm: number; zMm: number; widthMm: number; heightMm: number; kind: "door" | "window" };
+export type ElevationView = { widthMm: number; heightMm: number; openings: ElevationOpening[]; memberHandles: Set<string> };
+
+// Real-world millimeters. Two entities within this gap of each other count
+// as the same drawn view; found empirically (see module doc above) — loose
+// enough to hold one view's own genuinely separate strokes (a window sill
+// line a few hundred mm from its head line) while still stopping well short
+// of the gap to an unrelated view/schedule/detail on the same sheet.
+const ELEVATION_CLUSTER_GAP_MM = 1500;
+// A cluster smaller than this in either dimension isn't a real building
+// elevation — almost certainly a stray detail/symbol that happened to
+// contain (or sit beside) matching title text.
+const MIN_ELEVATION_SIZE_MM = 1000;
+
+function entityClusterPoints(e: IEntity): Pt[] {
+  switch (e.type) {
+    case "LINE":
+      return (e as ILineEntity).vertices ?? [];
+    case "LWPOLYLINE":
+      return (e as ILwpolylineEntity).vertices ?? [];
+    case "POLYLINE":
+      return (e as IPolylineEntity).vertices ?? [];
+    case "CIRCLE":
+    case "ARC": {
+      const a = e as IArcEntity & { center: Pt; radius: number };
+      if (!a.center) return [];
+      return [a.center, { x: a.center.x + a.radius, y: a.center.y }, { x: a.center.x - a.radius, y: a.center.y }, { x: a.center.x, y: a.center.y + a.radius }, { x: a.center.x, y: a.center.y - a.radius }];
+    }
+    case "INSERT": {
+      const p = (e as IInsertEntity).position;
+      return p ? [p] : [];
+    }
+    case "TEXT": {
+      const p = (e as ITextEntity).startPoint;
+      return p ? [p] : [];
+    }
+    case "MTEXT": {
+      const p = (e as IMtextEntity).position;
+      return p ? [p] : [];
+    }
+    default:
+      return [];
+  }
+}
+
+/**
+ * Groups entities into connected components by physical proximity in real
+ * millimeters (scale-aware) — two entities are in the same group if any of
+ * their own points come within `gapMm` of each other, transitively. Grid-
+ * bucketed (cell size = gapMm) so it stays fast on a few thousand entities
+ * instead of the naive O(n²) every-pair comparison.
+ */
+function clusterEntitiesByProximity(entities: IEntity[], scale: number, gapMm: number): IEntity[][] {
+  const n = entities.length;
+  const pts = entities.map((e) => entityClusterPoints(e).map((p) => scalePt(p, scale)));
+
+  const parent = Array.from({ length: n }, (_, i) => i);
+  function find(x: number): number {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  }
+  function union(a: number, b: number) {
+    const ra = find(a),
+      rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+
+  const cellKey = (x: number, y: number) => `${Math.floor(x / gapMm)},${Math.floor(y / gapMm)}`;
+  const buckets = new Map<string, number[]>();
+  for (let i = 0; i < n; i++) {
+    for (const p of pts[i]) {
+      const k = cellKey(p.x, p.y);
+      const bucket = buckets.get(k);
+      if (bucket) bucket.push(i);
+      else buckets.set(k, [i]);
+    }
+  }
+
+  for (let i = 0; i < n; i++) {
+    if (pts[i].length === 0) continue;
+    const candidates = new Set<number>();
+    for (const p of pts[i]) {
+      const bx = Math.floor(p.x / gapMm),
+        by = Math.floor(p.y / gapMm);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const j of buckets.get(`${bx + dx},${by + dy}`) ?? []) {
+            if (j > i) candidates.add(j);
+          }
+        }
+      }
+    }
+    for (const j of candidates) {
+      let close = false;
+      for (const p1 of pts[i]) {
+        for (const p2 of pts[j]) {
+          if (dist(p1, p2) < gapMm) {
+            close = true;
+            break;
+          }
+        }
+        if (close) break;
+      }
+      if (close) union(i, j);
+    }
+  }
+
+  const groups = new Map<number, IEntity[]>();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    const g = groups.get(r);
+    if (g) g.push(entities[i]);
+    else groups.set(r, [entities[i]]);
+  }
+  return [...groups.values()];
+}
+
+export function extractElevationViews(dxf: IDxf, scale: number): ElevationView[] {
+  const entities = dxf.entities ?? [];
+  const blocks = dxf.blocks ?? {};
+
+  const titleHandles = new Set<string>();
+  for (const e of entities) {
+    let raw: string | undefined;
+    if (e.type === "TEXT") raw = (e as ITextEntity).text;
+    else if (e.type === "MTEXT") raw = (e as IMtextEntity).text;
+    if (!raw) continue;
+    const clean = raw.replace(/\\P/g, " ").trim();
+    // A sheet that titles a view "SECTION THROUGH ELEVATION" or similar is
+    // rare and ambiguous enough to just leave to the detectNonPlanDrawing
+    // fallback rather than guess at a section as if it were an elevation.
+    if (ELEVATION_TITLE_RE.test(clean) && !SECTION_TITLE_RE.test(clean)) titleHandles.add(String(e.handle));
+  }
+  if (titleHandles.size === 0) return [];
+
+  const clusters = clusterEntitiesByProximity(entities, scale, ELEVATION_CLUSTER_GAP_MM);
+  const views: ElevationView[] = [];
+  for (const cluster of clusters) {
+    if (!cluster.some((e) => titleHandles.has(String(e.handle)))) continue;
+
+    const pts = cluster.flatMap((e) => entityClusterPoints(e).map((p) => scalePt(p, scale)));
+    const box = bbox(pts);
+    if (!box) continue;
+    const widthMm = box.maxX - box.minX;
+    const heightMm = box.maxY - box.minY;
+    if (widthMm < MIN_ELEVATION_SIZE_MM || heightMm < MIN_ELEVATION_SIZE_MM) continue;
+
+    const openings: ElevationOpening[] = [];
+    for (const e of cluster) {
+      if (e.type !== "INSERT") continue;
+      const insert = e as IInsertEntity;
+      const name = insert.name ?? "";
+      const layer = insert.layer ?? "";
+      if (SYSTEM_BLOCK_RE.test(name)) continue;
+      const isDoor = DOOR_RE.test(name) || DOOR_RE.test(layer);
+      const isWindow = !isDoor && (WINDOW_RE.test(name) || WINDOW_RE.test(layer));
+      if (!isDoor && !isWindow) continue;
+      const raw = blockLocalBBox(blocks[name]);
+      if (!raw) continue;
+      const rawWidth = raw.maxX - raw.minX;
+      const rawHeight = raw.maxY - raw.minY; // the block's own local "depth" axis reads as height in an elevation view
+      if (rawWidth < 1 || rawHeight < 1) continue;
+      const pos = scalePt(insert.position ?? { x: 0, y: 0 }, scale);
+      openings.push({
+        xMm: Math.round(pos.x - box.minX),
+        zMm: Math.round(pos.y - box.minY),
+        widthMm: Math.round(rawWidth * Math.abs(insert.xScale ?? 1) * scale),
+        heightMm: Math.round(rawHeight * Math.abs(insert.yScale ?? 1) * scale),
+        kind: isDoor ? "door" : "window",
+      });
+    }
+
+    views.push({ widthMm: Math.round(widthMm), heightMm: Math.round(heightMm), openings, memberHandles: new Set(cluster.map((e) => String(e.handle))) });
+  }
+  return views;
 }

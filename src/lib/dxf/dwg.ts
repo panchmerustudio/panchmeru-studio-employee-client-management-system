@@ -1,6 +1,6 @@
 import "server-only";
 import { LibreDwg, Dwg_File_Type } from "@mlightcad/libredwg-web";
-import { classifyDxf, detectNonPlanDrawing, type ClassificationResult } from "./classify";
+import { classifyDxf, detectNonPlanDrawing, extractElevationViews, type ClassificationResult, type ElevationView } from "./classify";
 import { resolveUnits, UNIT_TO_MM, type CadUnits, type UnitsResolution } from "./units";
 import { dwgDatabaseToIDxf, type DwgDatabaseLike } from "./from-dwg";
 
@@ -43,7 +43,10 @@ function countEntities(db: DwgDatabaseLike): number {
   return (modelSpace?.entities ?? db.entities ?? []).length;
 }
 
-export async function parseDwgBuffer(fileContent: ArrayBuffer, units: CadUnits): Promise<{ result: ClassificationResult; unitsResolution: UnitsResolution }> {
+export async function parseDwgBuffer(
+  fileContent: ArrayBuffer,
+  units: CadUnits
+): Promise<{ result: ClassificationResult; unitsResolution: UnitsResolution; elevationViews: ElevationView[] }> {
   const libredwg = await getLibreDwg();
 
   let dataPtr: number | undefined;
@@ -84,8 +87,22 @@ export async function parseDwgBuffer(fileContent: ArrayBuffer, units: CadUnits):
 
   const dxf = dwgDatabaseToIDxf(db);
   const unitsResolution = resolveUnits(dxf, units);
-  const result = classifyDxf(dxf, UNIT_TO_MM[unitsResolution.effective]);
+  const scale = UNIT_TO_MM[unitsResolution.effective];
+
+  // Isolate any elevation view(s) BEFORE plan classification runs, so their
+  // own geometry can't get mis-paired into bogus "walls" — see
+  // extractElevationViews' doc in classify.ts.
+  const elevationViews = extractElevationViews(dxf, scale);
+  const excludeHandles = elevationViews.length > 0 ? new Set(elevationViews.flatMap((v) => [...v.memberHandles])) : undefined;
+  const result = classifyDxf(dxf, scale, { excludeHandles });
+
+  // "recognize the type of drawing and work accordingly": a sheet with no
+  // usable plan-view wall structure used to always be rejected outright.
+  // Now it's only rejected when no elevation view could be built from it
+  // either — a real elevation-only upload succeeds with just the facade
+  // panel instead (a genuinely section-only sheet still has nothing this
+  // codebase can build, so it keeps being rejected).
   const nonPlanReason = detectNonPlanDrawing(dxf, result);
-  if (nonPlanReason) throw new Error(nonPlanReason);
-  return { result, unitsResolution };
+  if (nonPlanReason && elevationViews.length === 0) throw new Error(nonPlanReason);
+  return { result, unitsResolution, elevationViews };
 }

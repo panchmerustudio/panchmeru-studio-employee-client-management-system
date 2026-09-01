@@ -166,3 +166,79 @@ check("both regions report a plausible floor area (each ~11 m² for a 2.77m x 4m
 const doorInMiddleWall: CadEntityInput = { id: "tr-door", type: "door", layerName: "A-DOOR", label: "DOOR_900", geometry: { position: { x: 3000, y: 2000 } }, widthMm: 900, depthMm: 50, heightMm: 2100, rotationDeg: 90 };
 const { floorRegions: regionsWithDoor } = buildScene([...outerRingWalls, middleWall, doorInMiddleWall], { windowSillMm: 900 });
 check("cutting a doorway into the dividing wall merges the two rooms into 1 connected floor region", regionsWithDoor.length === 1);
+
+/*
+  Regression case for the "generate a 3D model of the building's front
+  face" feature — an elevation_panel entity (see extractElevationViews in
+  classify.ts) must build into a real upright, opening-cut facade mesh via
+  buildElevationPanel(), whether or not a floor plan exists alongside it.
+*/
+const elevationOnlyEntity: CadEntityInput = {
+  id: "elev1",
+  type: "elevation_panel",
+  layerName: "A-ELEV",
+  label: "FRONT ELEVATION",
+  geometry: {
+    widthMm: 8000,
+    heightMm: 3200,
+    openings: [
+      { xMm: 1000, zMm: 900, widthMm: 1200, heightMm: 1500, kind: "window" },
+      { xMm: 3500, zMm: 0, widthMm: 900, heightMm: 2100, kind: "door" },
+    ],
+  },
+  widthMm: 8000,
+  depthMm: 3200,
+  heightMm: 3200,
+  rotationDeg: 0,
+};
+
+// Case A: elevation-only model (no walls at all) — mirrors what
+// classifyDxf/extractElevationViews produce for a pure elevation sheet.
+const { group: elevOnlyGroup } = buildScene([elevationOnlyEntity], { windowSillMm: 900 });
+// The real app's WebGLRenderer recomputes every object's world matrix each
+// frame; here nothing has rendered yet, so nested groups' position offsets
+// (e.g. buildElevationPanel's own wrapping group) won't show up in a Box3
+// until the scene graph's matrices are forced up to date once, top-down.
+elevOnlyGroup.updateMatrixWorld(true);
+const elevOnlyMesh = findMesh(elevOnlyGroup, (m) => m.userData?.cadEntityId === "elev1");
+check("elevation-only model builds a panel mesh without crashing", !!elevOnlyMesh);
+if (elevOnlyMesh) {
+  const size = new THREE.Box3().setFromObject(elevOnlyMesh).getSize(new THREE.Vector3());
+  const sizeMm = { x: Math.round(size.x * 1000), y: Math.round(size.y * 1000), z: Math.round(size.z * 1000) };
+  console.log(`Elevation panel size (mm): width=${sizeMm.x} height=${sizeMm.y} thickness=${sizeMm.z}`);
+  check("elevation panel width matches the measured elevation width (8000mm)", Math.abs(sizeMm.x - 8000) < 2);
+  check("elevation panel height matches the measured elevation height (3200mm)", Math.abs(sizeMm.y - 3200) < 2);
+  check("elevation panel has a plausible, non-fabricated thickness (a slab, not a paper cutout)", sizeMm.z > 0 && sizeMm.z < 1000);
+}
+check("elevation panel mesh is tagged cadType elevation_panel", elevOnlyMesh?.userData?.cadType === "elevation_panel");
+const elevOnlyBox = elevOnlyMesh ? new THREE.Box3().setFromObject(elevOnlyMesh) : null;
+check("elevation-only panel stands with its bottom edge at ground level (y≈0)", !!elevOnlyBox && Math.abs(elevOnlyBox.min.y) < 1);
+
+// Case B: elevation view combined with a real floor plan — the panel must
+// be offset in front of the building footprint (not overlapping the real
+// walls) per buildElevationPanel's placement doc, and the wall geometry
+// itself must be completely unaffected by the elevation entity being
+// present (they share no coordinate frame).
+const combinedEntities: CadEntityInput[] = [...outerRingWalls, elevationOnlyEntity];
+const { group: combinedGroup } = buildScene(combinedEntities, { windowSillMm: 900 });
+combinedGroup.updateMatrixWorld(true);
+const combinedPanelMesh = findMesh(combinedGroup, (m) => m.userData?.cadEntityId === "elev1");
+check("elevation panel still builds when a floor plan is also present", !!combinedPanelMesh);
+if (combinedPanelMesh) {
+  const panelBox = new THREE.Box3().setFromObject(combinedPanelMesh);
+  // outerRingWalls' footprint spans plan-Y 0..4000mm, which maps to world Z
+  // 0..4000mm (toThree: plan-Y -> world Z) — the panel must sit in front of
+  // (i.e. at a smaller world-Z than) that footprint, not inside/behind it.
+  check("elevation panel is offset clear of the real floor-plan footprint, not overlapping it", panelBox.max.z <= 0);
+}
+const w1MeshInCombined = findMesh(combinedGroup, (m) => m.userData?.cadEntityId === "tr-w1");
+check("floor-plan wall geometry is unaffected by the elevation entity sharing the scene", !!w1MeshInCombined);
+
+function findMesh(obj: THREE.Object3D, pred: (m: THREE.Object3D) => boolean): THREE.Object3D | null {
+  if (pred(obj)) return obj;
+  for (const c of obj.children) {
+    const found = findMesh(c, pred);
+    if (found) return found;
+  }
+  return null;
+}

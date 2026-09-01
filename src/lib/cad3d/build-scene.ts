@@ -15,10 +15,11 @@
  * consistently so the whole scene, camera, and controls agree.
  */
 import * as THREE from "three";
+import { bbox } from "../dxf/geometry-utils";
 
 export type CadEntityInput = {
   id: string;
-  type: "wall" | "door" | "window" | "column" | "stair" | "furniture" | "room" | "unclassified";
+  type: "wall" | "door" | "window" | "column" | "stair" | "furniture" | "room" | "unclassified" | "elevation_panel";
   layerName: string;
   label?: string | null;
   geometry: unknown;
@@ -837,6 +838,75 @@ function buildFlatPolygon(points: Pt[], heightMm: number, color: number): THREE.
   return mesh;
 }
 
+// A modest, plausible facade thickness — an elevation view has no
+// front-to-back measurement of its own (it's a flat-on view), so this is
+// deliberately NOT presented anywhere as a measured value, just enough
+// depth for the panel to read as a wall slab rather than a paper cutout.
+const ELEVATION_PANEL_THICKNESS_MM = 200;
+// How far in front of the building's own footprint the panel sits when a
+// floor plan also exists, so it doesn't visually clip into real walls.
+const ELEVATION_PANEL_STANDOFF_MM = 600;
+
+/**
+ * A flat, upright facade panel built from an elevation view's own measured
+ * width/height and (when the source file tagged them) door/window cutouts
+ * — see extractElevationViews' doc in classify.ts for what this
+ * deliberately does NOT attempt (tracing a real roofline/silhouette).
+ *
+ * Unlike buildFlatPolygon (a floor-plan shape rotated flat onto the
+ * ground), this shape is drawn directly in Three's XY plane and left
+ * un-rotated: local shape-X maps straight to world X (horizontal), local
+ * shape-Y to world Y (Three is Y-up, matching an elevation's own
+ * convention that Y is real-world height) — so the panel simply stands up
+ * on its own, with its bottom edge at ground level.
+ *
+ * `placement` has no reliable source of truth linking an elevation view's
+ * own local origin to the floor plan's coordinate frame (they're often
+ * entirely separate, unrelated views on the same sheet — see the module
+ * doc) — when a floor plan exists the panel is centered on the building's
+ * footprint and offset in front of it as a reasonable default placement,
+ * not a measured one; with no floor plan it just stands at the origin.
+ */
+function buildElevationPanel(e: CadEntityInput, placement: { centerX: number; frontY: number }): THREE.Group | null {
+  const geo = e.geometry as { widthMm?: number; heightMm?: number; openings?: { xMm: number; zMm: number; widthMm: number; heightMm: number; kind: string }[] };
+  const widthMm = geo.widthMm ?? e.widthMm ?? 0;
+  const heightMm = geo.heightMm ?? e.depthMm ?? 0;
+  if (widthMm < 1 || heightMm < 1) return null;
+
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.lineTo(widthMm * MM, 0);
+  shape.lineTo(widthMm * MM, heightMm * MM);
+  shape.lineTo(0, heightMm * MM);
+  shape.closePath();
+
+  for (const o of geo.openings ?? []) {
+    const x0 = Math.max(0, o.xMm),
+      x1 = Math.min(widthMm, o.xMm + o.widthMm);
+    const z0 = Math.max(0, o.zMm),
+      z1 = Math.min(heightMm, o.zMm + o.heightMm);
+    if (x1 <= x0 || z1 <= z0) continue; // degenerate/out-of-bounds opening — skip rather than cut a bogus hole
+    const hole = new THREE.Path();
+    hole.moveTo(x0 * MM, z0 * MM);
+    hole.lineTo(x1 * MM, z0 * MM);
+    hole.lineTo(x1 * MM, z1 * MM);
+    hole.lineTo(x0 * MM, z1 * MM);
+    hole.closePath();
+    shape.holes.push(hole);
+  }
+
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: ELEVATION_PANEL_THICKNESS_MM * MM, bevelEnabled: false });
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xe4ddcb, roughness: 0.9 }));
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData = { cadEntityId: e.id, cadType: "elevation_panel" };
+
+  const group = new THREE.Group();
+  group.add(mesh);
+  group.position.set((placement.centerX - widthMm / 2) * MM, 0, placement.frontY * MM);
+  return group;
+}
+
 // Room polygons are rare in real DXFs (see buildFloorSlab's doc) but when a
 // ROOM/AREA layer with a legible name does exist, tint it and tag it
 // instead of the same flat beige every room got before — "colorful ...
@@ -1553,6 +1623,26 @@ export function buildScene(
       tag.position.copy(toThree(cx, cy, 2100));
       group.add(tag);
     }
+  }
+
+  // Elevation panel(s) — see buildElevationPanel's doc for the placement
+  // tradeoff (centered/offset in front of the plan footprint when one
+  // exists; standing at the origin for an elevation-only model, since
+  // ELEVATION-only models have no walls at all here).
+  const elevationPanels = entities.filter((e) => e.type === "elevation_panel");
+  if (elevationPanels.length > 0) {
+    const footprintPts = walls.flatMap((w) => [w.geometry.start, w.geometry.end]);
+    const footprint = bbox(footprintPts);
+    const centerX = footprint ? (footprint.minX + footprint.maxX) / 2 : 0;
+    const frontY = footprint ? footprint.minY - ELEVATION_PANEL_STANDOFF_MM - ELEVATION_PANEL_THICKNESS_MM : 0;
+    elevationPanels.forEach((e, i) => {
+      // Multiple elevation views (front/side/rear, say) have no reliable
+      // way to know their real relative spacing either — laid out side by
+      // side along X so they're all visible rather than overlapping.
+      const spread = i * 3000; // 3m gap between stacked panels, arbitrary but keeps them from touching
+      const panel = buildElevationPanel(e, { centerX: centerX + spread, frontY });
+      if (panel) group.add(panel);
+    });
   }
 
   const pointEntities = entities.filter((e) => e.type === "furniture" || e.type === "column" || e.type === "door" || e.type === "window");

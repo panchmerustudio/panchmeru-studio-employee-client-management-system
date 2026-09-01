@@ -56,13 +56,17 @@ export const cadModels = pgTable("cad_models", {
  *   door/window/column/furniture: { position: {x,y} }
  *   room/stair:             { points: [{x,y}, ...] }
  *   unclassified:            { points: [{x,y}, ...], entityType: "LINE" | ... }
+ *   elevation_panel:         { widthMm, heightMm, openings: [{xMm, zMm, widthMm, heightMm, kind: "door"|"window"}, ...] } —
+ *                            a flat facade panel built from an elevation view (see extractElevationViews in
+ *                            src/lib/dxf/classify.ts); xMm/zMm are local to the panel's own bottom-left corner,
+ *                            NOT plan (x,y) — z here is real-world height, not the plan's second horizontal axis.
  */
 export const cadEntities = pgTable("cad_entities", {
   id: idColumn(),
   modelId: text("model_id")
     .notNull()
     .references(() => cadModels.id, { onDelete: "cascade" }),
-  type: text("type", { enum: ["wall", "door", "window", "column", "stair", "furniture", "room", "unclassified"] }).notNull(),
+  type: text("type", { enum: ["wall", "door", "window", "column", "stair", "furniture", "room", "unclassified", "elevation_panel"] }).notNull(),
   layerName: text("layer_name").notNull(),
   label: text("label"), // block name / room name / raw DXF entity type for unclassified rows
   geometry: jsonb("geometry").notNull(),

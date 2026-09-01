@@ -1,21 +1,30 @@
 import "server-only";
 import DxfParser from "dxf-parser";
-import { classifyDxf, detectNonPlanDrawing, type ClassificationResult } from "./classify";
+import { classifyDxf, detectNonPlanDrawing, extractElevationViews, type ClassificationResult, type ElevationView } from "./classify";
 import { resolveUnits, UNIT_TO_MM, type CadUnits, type UnitsResolution } from "./units";
 
-export function parseDxfFile(dxfText: string, units: CadUnits): { result: ClassificationResult; unitsResolution: UnitsResolution } {
+export function parseDxfFile(dxfText: string, units: CadUnits): { result: ClassificationResult; unitsResolution: UnitsResolution; elevationViews: ElevationView[] } {
   const parser = new DxfParser();
   const dxf = parser.parseSync(dxfText);
   if (!dxf) throw new Error("Couldn't read this file as DXF — make sure it was saved/exported as DXF (not DWG) from AutoCAD.");
   const unitsResolution = resolveUnits(dxf, units);
-  const result = classifyDxf(dxf, UNIT_TO_MM[unitsResolution.effective]);
+  const scale = UNIT_TO_MM[unitsResolution.effective];
+
+  // Isolate any elevation view(s) BEFORE plan classification runs — see
+  // extractElevationViews' doc in classify.ts.
+  const elevationViews = extractElevationViews(dxf, scale);
+  const excludeHandles = elevationViews.length > 0 ? new Set(elevationViews.flatMap((v) => [...v.memberHandles])) : undefined;
+  const result = classifyDxf(dxf, scale, { excludeHandles });
+
   // "recognize the type of drawing and work accordingly" — a plan-view
-  // floor layout gets modeled as before; an elevation/section sheet (see
-  // detectNonPlanDrawing's doc in classify.ts) is reported clearly instead
-  // of silently producing an empty model.
+  // floor layout gets modeled as before; an elevation view now builds a
+  // real facade panel instead of being rejected. A genuinely section-only
+  // (or elevation-titled-but-unextractable) sheet is still reported
+  // clearly instead of silently producing an empty model — see
+  // detectNonPlanDrawing's doc in classify.ts.
   const nonPlanReason = detectNonPlanDrawing(dxf, result);
-  if (nonPlanReason) throw new Error(nonPlanReason);
-  return { result, unitsResolution };
+  if (nonPlanReason && elevationViews.length === 0) throw new Error(nonPlanReason);
+  return { result, unitsResolution, elevationViews };
 }
 
 /** Light heuristic check before we even hand the buffer to the real parser — DXF is ASCII/text, starting with a "0" / "SECTION" group-code pair. Gives a clear error fast instead of a confusing parser exception for e.g. an accidentally-uploaded DWG. */
@@ -26,4 +35,4 @@ export function looksLikeDxf(text: string) {
 
 export { classifyDxf, UNIT_TO_MM };
 export type { CadUnits, UnitsResolution } from "./units";
-export type { ClassificationResult, ClassifiedEntity } from "./classify";
+export type { ClassificationResult, ClassifiedEntity, ElevationView, ElevationOpening } from "./classify";
