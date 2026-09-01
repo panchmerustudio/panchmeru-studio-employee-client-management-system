@@ -12,7 +12,17 @@ import { MissingInfoForm } from "./missing-info-form";
 import { ModelViewerClient } from "./model-viewer-client";
 import { DeleteModelButton } from "./delete-model-button";
 
-const TYPE_LABELS: Record<string, string> = { wall: "Walls", door: "Doors", window: "Windows", column: "Columns", furniture: "Furniture", room: "Rooms", stair: "Stairs", unclassified: "Unclassified" };
+const TYPE_LABELS: Record<string, string> = {
+  wall: "Walls",
+  door: "Doors",
+  window: "Windows",
+  column: "Columns",
+  furniture: "Furniture",
+  room: "Rooms",
+  stair: "Stairs",
+  unclassified: "Unclassified",
+  elevation_panel: "Elevation panel",
+};
 
 export default async function CadModelPage({ params }: { params: Promise<{ id: string; modelId: string }> }) {
   const { id, modelId } = await params;

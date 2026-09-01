@@ -4,7 +4,7 @@
  * which is dxf-parser's own well-tested job — the real risk here is our
  * classification/geometry logic). Run with: npx tsx scripts/test-cad-classify.ts
  */
-import { classifyDxf, detectNonPlanDrawing, extractElevationViews, type ClassifiedOpening, type ClassifiedFurniture } from "../src/lib/dxf/classify";
+import { classifyDxf, detectNonPlanDrawing, extractElevationViews, partitionByViewTitles, extractViews, type ClassifiedOpening, type ClassifiedFurniture } from "../src/lib/dxf/classify";
 import type { IDxf } from "dxf-parser";
 
 function rectBlockEntities(w: number, h: number) {
@@ -362,6 +362,109 @@ const combinedExclude = new Set(combinedElevationViews.flatMap((v) => [...v.memb
 const combinedResultWithExclusion = classifyDxf(combinedPlanElevationDxf, 1, { excludeHandles: combinedExclude });
 const wallsWithExclusion = combinedResultWithExclusion.entities.filter((e) => e.type === "wall");
 check("combined sheet WITH elevation excluded: only the real plan's 2 walls remain", wallsWithExclusion.length === 2);
+
+/*
+  Regression case for a real reported file: a sheet can carry MORE than one
+  plan (a real reference DWG had "GROUND FLOOR PLAN", "FIRST FLOOR PLAN",
+  and "TERRACEFLOOR PLAN" — no space — plus a "FRONT ELEVATION", stacked
+  close enough that proximity-connectivity fuses them into one blob). Three
+  storeys + an elevation, stacked directly on top of each other with only a
+  300mm gap (deliberately tighter than ELEVATION_CLUSTER_GAP_MM=1500, so a
+  naive connectivity-only approach — extractElevationViews' own strategy —
+  would treat this whole stack as one blob), each with its own real MTEXT
+  title. Titles here also reuse the real file's own formatting-code shape
+  (`\L` immediately touching the keyword, no space) to cover the
+  cleanMTextLabel fix: `\bground\b` etc. would silently fail to match
+  "\LGROUND..." without it, because \L's own "L" is a word character
+  sitting directly against "G" with no \b transition between them.
+*/
+function mtextTitle(word: string) {
+  return `\\A1;{\\fArial|b0|i0|c0|p0;\\L${word}}`;
+}
+// Two short (2000mm) parallel wall-pairs, both tucked close to (cy±800) —
+// short enough to stay well clear of a neighboring level's own title, the
+// same way real wall segments (a real reference file's own segments ran
+// 600-3000mm) stay far shorter than the gap between two stacked views'
+// titles. An earlier version of this fixture used one LINE spanning an
+// entire level's full height, which put that line's own centroid roughly
+// equidistant between two titles — a real, if narrow, edge case for very
+// long entities in a tightly-stacked sheet, but not representative of how
+// real plan geometry (many short segments) actually looks.
+function levelWalls(handleBase: number, cy: number, layer = "A-WALL") {
+  return [
+    { type: "LINE", layer, handle: handleBase, vertices: [{ x: -1000, y: cy - 800 }, { x: 1000, y: cy - 800 }] },
+    { type: "LINE", layer, handle: handleBase + 1, vertices: [{ x: -1000, y: cy - 600 }, { x: 1000, y: cy - 600 }] },
+    { type: "LINE", layer, handle: handleBase + 2, vertices: [{ x: -1000, y: cy + 600 }, { x: 1000, y: cy + 600 }] },
+    { type: "LINE", layer, handle: handleBase + 3, vertices: [{ x: -1000, y: cy + 800 }, { x: 1000, y: cy + 800 }] },
+  ];
+}
+const multiStoreyDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    // GROUND FLOOR PLAN — centered y=0, the entry level, should be picked as primary.
+    ...levelWalls(600, 0),
+    { type: "MTEXT", layer: "TEXT", handle: 610, text: mtextTitle("GROUND FLOOR PLAN"), position: { x: 0, y: 0 } },
+    // FIRST FLOOR PLAN — centered y=3000; its own nearest wall point (y=2200)
+    // sits only 1400mm from ground's farthest wall point (y=800) — tighter
+    // than ELEVATION_CLUSTER_GAP_MM=1500, so a naive connectivity-only
+    // approach (extractElevationViews' own strategy) would fuse the two
+    // levels into one blob. Nearest-title assignment still separates them
+    // cleanly because each level's OWN points stay closer to its own title
+    // than to the neighboring one.
+    ...levelWalls(620, 3000),
+    { type: "MTEXT", layer: "TEXT", handle: 630, text: mtextTitle("FIRST FLOOR PLAN"), position: { x: 0, y: 3000 } },
+    // FRONT ELEVATION — a real drawn rectangle (not just short wall stubs),
+    // y 5200..8200, again only 1400mm above first floor's own highest point
+    // (3800). Its own title sits at the rectangle's vertical center.
+    { type: "LINE", layer: "wall", handle: 640, vertices: [{ x: -2000, y: 5200 }, { x: 2000, y: 5200 }] },
+    { type: "LINE", layer: "wall", handle: 641, vertices: [{ x: 2000, y: 5200 }, { x: 2000, y: 8200 }] },
+    { type: "LINE", layer: "wall", handle: 642, vertices: [{ x: 2000, y: 8200 }, { x: -2000, y: 8200 }] },
+    { type: "LINE", layer: "wall", handle: 643, vertices: [{ x: -2000, y: 8200 }, { x: -2000, y: 5200 }] },
+    { type: "MTEXT", layer: "TEXT", handle: 650, text: mtextTitle("ELEVATION"), position: { x: 0, y: 6700 } },
+    // A stray block pasted FAR away on the same sheet (a title block/logo,
+    // common on real sheets) — must NOT get force-assigned to whichever
+    // title happens to be nearest despite being absurdly far away (the
+    // exact bug that inflated a real elevation's measured height past 10x
+    // its real size before the assignment cap was added).
+    { type: "LINE", layer: "0", handle: 660, vertices: [{ x: 0, y: 500000 }, { x: 100, y: 500100 }] },
+  ],
+} as unknown as IDxf;
+
+const multiStoreyPartition = partitionByViewTitles(multiStoreyDxf, 1);
+check("multi-storey sheet: partitionByViewTitles engages (>= 2 titles found)", !!multiStoreyPartition);
+check(
+  'multi-storey sheet: "GROUND FLOOR PLAN" (formatted as "\\LGROUND FLOOR PLAN", no space) is correctly read as the primary/ground level despite the MTEXT formatting code touching the keyword',
+  multiStoreyPartition?.primaryPlanTitle === "GROUND FLOOR PLAN"
+);
+check(
+  "multi-storey sheet: FIRST FLOOR PLAN is recognized as another level, not modeled",
+  !!multiStoreyPartition?.otherLevelTitles.includes("FIRST FLOOR PLAN")
+);
+check("multi-storey sheet: exactly one elevation view extracted (the far stray block excluded)", multiStoreyPartition?.elevationViews.length === 1);
+check(
+  "multi-storey sheet: elevation view sized from its own 4000x3000 rectangle only — NOT inflated by the far-away stray block (which would balloon height past 490000mm)",
+  multiStoreyPartition?.elevationViews[0]?.widthMm === 4000 && multiStoreyPartition?.elevationViews[0]?.heightMm === 3000
+);
+
+const multiStoreyViews = extractViews(multiStoreyDxf, 1);
+const multiStoreyResult = classifyDxf(multiStoreyDxf, 1, { excludeHandles: multiStoreyViews.excludeHandles });
+check("multi-storey sheet: only the GROUND floor's own 2 walls are modeled (first floor + elevation excluded)", multiStoreyResult.entityCounts.wall === 2);
+const multiStoreyGroundWalls = multiStoreyResult.entities.filter((e) => e.type === "wall");
+check(
+  "multi-storey sheet: the modeled walls are actually the ground-level ones (centered y=0), not the first floor's (centered y=3000)",
+  multiStoreyGroundWalls.every((w) => w.type === "wall" && Math.abs(w.start.y) < 1000 && Math.abs(w.end.y) < 1000)
+);
+
+/*
+  A single-plan (or plan+one-elevation) sheet — the overwhelming common
+  case — has 0 or 1 view titles, not >= 2, so partitionByViewTitles must
+  stay OUT of the way entirely and let extractElevationViews' proximity
+  approach handle it exactly as before this multi-view partitioning was
+  added (checked here directly against the file's own main fixture, which
+  has no view titles at all).
+*/
+check("ordinary single-plan sheet (no view titles): partitionByViewTitles returns null, doesn't engage", partitionByViewTitles(dxf, 1) === null);
 
 function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);

@@ -259,6 +259,8 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   let result: ClassificationResult;
   let unitsResolution: UnitsResolution;
   let elevationViews: ElevationView[];
+  let otherLevelTitles: string[];
+  let otherLevelEntityCount: number;
   try {
     if (isDwg) {
       // DWG is Autodesk's proprietary binary format, but read directly here
@@ -267,14 +269,17 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       // is avoided) and its doc comment for the GPL-3.0 licensing note on
       // the parser this uses.
       const buffer = await readStoredFile(fileKey);
-      ({ result, unitsResolution, elevationViews } = await parseDwgBuffer(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer, units));
+      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount } = await parseDwgBuffer(
+        buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer,
+        units
+      ));
     } else {
       const buffer = await readStoredFile(fileKey);
       const text = buffer.toString("utf-8");
       if (!looksLikeDxf(text)) {
         throw new Error("This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG.");
       }
-      ({ result, unitsResolution, elevationViews } = parseDxfFile(text, units));
+      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount } = parseDxfFile(text, units));
     }
   } catch (err) {
     console.error("[cad] uploadCadModel failed:", err);
@@ -297,7 +302,13 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   // and the model's name, which is shown everywhere in the CAD list/detail
   // UI without any template changes needed.
   const unitsOverridden = unitsResolution.source === "file";
-  const displayName = unitsOverridden ? `${name} (units auto-corrected: ${unitsResolution.requested} → ${unitsResolution.effective})` : name;
+  // Same reasoning for a multi-storey sheet (see partitionByViewTitles in
+  // classify.ts): this app only ever models ONE plan-kind view (no
+  // multi-storey extrusion), so when a sheet also carried other floor
+  // levels' own titled plans, that's surfaced here rather than the extra
+  // floors just silently vanishing with no trace of why.
+  const otherLevelsNote = otherLevelTitles.length > 0 ? ` (also on this sheet, not modeled — multi-storey isn't supported yet: ${otherLevelTitles.join(", ")})` : "";
+  const displayName = `${name}${unitsOverridden ? ` (units auto-corrected: ${unitsResolution.requested} → ${unitsResolution.effective})` : ""}${otherLevelsNote}`;
 
   // An elevation view's own measured height stands in for the floor_height
   // missing-input's DEFAULT when it's plausibly a single storey (see
@@ -359,6 +370,8 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       autoAssumedDefaults: Object.fromEntries(missingSpecs.map((s) => [s.kind, valueForSpec(s)])),
       elevationViews: elevationViews.map((v) => ({ widthMm: v.widthMm, heightMm: v.heightMm, openings: v.openings.length })),
       elevationFloorHeightMm: elevationFloorHeightMm ?? null,
+      otherLevelTitles,
+      otherLevelEntityCount,
     },
   });
   revalidatePath(`/projects/${projectId}/cad`);

@@ -666,6 +666,35 @@ export function classifyDxf(dxf: IDxf, scale: number, opts?: { excludeHandles?: 
 */
 const ELEVATION_TITLE_RE = /\belevations?\b/i;
 const SECTION_TITLE_RE = /\bsection\s+[a-z]\s*[-–—]\s*[a-z]\b|\bcross[\s-]section\b/i;
+
+/**
+ * MTEXT stores its own inline rich-text formatting codes right in the
+ * string (font/color/height/underline switches, `{...}` grouping) — a
+ * title is very often written as e.g. `\A1;{\fStylus BT|...;\LGROUND FLOOR
+ * PLAN}`, not the plain "GROUND FLOOR PLAN" a `\b...\b` keyword regex
+ * expects. Left unstripped, a keyword that happens to sit immediately
+ * after a formatting code with no space between them (`\LGROUND`,
+ * `\LFIRST` — both real, from the same reference file) silently fails
+ * every `\bkeyword\b` match, because \b only fires at a transition between
+ * a word character and a non-word one, and the formatting code's own
+ * letter (the "L" in `\L`) IS a word character. This strips the common
+ * codes (alignment/font/color/height/paragraph-break/underline-etc.
+ * toggles and the `{}` grouping) down to the plain visible text, so
+ * keyword matching sees what a person reading the drawing would.
+ */
+function cleanMTextLabel(raw: string): string {
+  return raw
+    .replace(/\\P/g, " ")
+    .replace(/\\A\d+;/g, "")
+    .replace(/\\f[^;]*;/gi, "")
+    .replace(/\\C\d+;/g, "")
+    .replace(/\\H[\d.]+x?;/gi, "")
+    .replace(/\\[LlOoKk]/g, "")
+    .replace(/[{}]/g, "")
+    .replace(/\\\\/g, "\\")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 const MIN_WALLS_FOR_PLAN_VIEW = 2;
 
 export function detectNonPlanDrawing(dxf: IDxf, result: ClassificationResult): string | null {
@@ -676,7 +705,7 @@ export function detectNonPlanDrawing(dxf: IDxf, result: ClassificationResult): s
     if (e.type === "TEXT") raw = (e as ITextEntity).text;
     else if (e.type === "MTEXT") raw = (e as IMtextEntity).text;
     if (!raw) continue;
-    const clean = raw.replace(/\\P/g, " ").trim();
+    const clean = cleanMTextLabel(raw);
     if (ELEVATION_TITLE_RE.test(clean) || SECTION_TITLE_RE.test(clean)) {
       return `This looks like an elevation or section drawing ("${clean}"), not a floor plan — no usable wall layout was found on it. The 3D modeler builds from a plan-view floor layout (walls, doors, and windows seen from directly above); upload that drawing instead, or export just the floor plan sheet as its own DXF.`;
     }
@@ -835,6 +864,51 @@ function clusterEntitiesByProximity(entities: IEntity[], scale: number, gapMm: n
   return [...groups.values()];
 }
 
+/**
+ * Shared by both extraction strategies below: measures one cluster of
+ * entities (already decided to belong to a single elevation view, however
+ * that decision was made) into a real ElevationView — its bounding
+ * rectangle plus any door/window openings the source file itself tags via
+ * a recognizable block/layer name. Returns null for a cluster too small to
+ * plausibly be a real building elevation (MIN_ELEVATION_SIZE_MM) rather
+ * than a stray detail/symbol.
+ */
+function measureElevationCluster(cluster: IEntity[], blocks: Record<string, IBlock>, scale: number): ElevationView | null {
+  const pts = cluster.flatMap((e) => entityClusterPoints(e).map((p) => scalePt(p, scale)));
+  const box = bbox(pts);
+  if (!box) return null;
+  const widthMm = box.maxX - box.minX;
+  const heightMm = box.maxY - box.minY;
+  if (widthMm < MIN_ELEVATION_SIZE_MM || heightMm < MIN_ELEVATION_SIZE_MM) return null;
+
+  const openings: ElevationOpening[] = [];
+  for (const e of cluster) {
+    if (e.type !== "INSERT") continue;
+    const insert = e as IInsertEntity;
+    const name = insert.name ?? "";
+    const layer = insert.layer ?? "";
+    if (SYSTEM_BLOCK_RE.test(name)) continue;
+    const isDoor = DOOR_RE.test(name) || DOOR_RE.test(layer);
+    const isWindow = !isDoor && (WINDOW_RE.test(name) || WINDOW_RE.test(layer));
+    if (!isDoor && !isWindow) continue;
+    const raw = blockLocalBBox(blocks[name]);
+    if (!raw) continue;
+    const rawWidth = raw.maxX - raw.minX;
+    const rawHeight = raw.maxY - raw.minY; // the block's own local "depth" axis reads as height in an elevation view
+    if (rawWidth < 1 || rawHeight < 1) continue;
+    const pos = scalePt(insert.position ?? { x: 0, y: 0 }, scale);
+    openings.push({
+      xMm: Math.round(pos.x - box.minX),
+      zMm: Math.round(pos.y - box.minY),
+      widthMm: Math.round(rawWidth * Math.abs(insert.xScale ?? 1) * scale),
+      heightMm: Math.round(rawHeight * Math.abs(insert.yScale ?? 1) * scale),
+      kind: isDoor ? "door" : "window",
+    });
+  }
+
+  return { widthMm: Math.round(widthMm), heightMm: Math.round(heightMm), openings, memberHandles: new Set(cluster.map((e) => String(e.handle))) };
+}
+
 export function extractElevationViews(dxf: IDxf, scale: number): ElevationView[] {
   const entities = dxf.entities ?? [];
   const blocks = dxf.blocks ?? {};
@@ -845,7 +919,7 @@ export function extractElevationViews(dxf: IDxf, scale: number): ElevationView[]
     if (e.type === "TEXT") raw = (e as ITextEntity).text;
     else if (e.type === "MTEXT") raw = (e as IMtextEntity).text;
     if (!raw) continue;
-    const clean = raw.replace(/\\P/g, " ").trim();
+    const clean = cleanMTextLabel(raw);
     // A sheet that titles a view "SECTION THROUGH ELEVATION" or similar is
     // rare and ambiguous enough to just leave to the detectNonPlanDrawing
     // fallback rather than guess at a section as if it were an elevation.
@@ -857,40 +931,253 @@ export function extractElevationViews(dxf: IDxf, scale: number): ElevationView[]
   const views: ElevationView[] = [];
   for (const cluster of clusters) {
     if (!cluster.some((e) => titleHandles.has(String(e.handle)))) continue;
-
-    const pts = cluster.flatMap((e) => entityClusterPoints(e).map((p) => scalePt(p, scale)));
-    const box = bbox(pts);
-    if (!box) continue;
-    const widthMm = box.maxX - box.minX;
-    const heightMm = box.maxY - box.minY;
-    if (widthMm < MIN_ELEVATION_SIZE_MM || heightMm < MIN_ELEVATION_SIZE_MM) continue;
-
-    const openings: ElevationOpening[] = [];
-    for (const e of cluster) {
-      if (e.type !== "INSERT") continue;
-      const insert = e as IInsertEntity;
-      const name = insert.name ?? "";
-      const layer = insert.layer ?? "";
-      if (SYSTEM_BLOCK_RE.test(name)) continue;
-      const isDoor = DOOR_RE.test(name) || DOOR_RE.test(layer);
-      const isWindow = !isDoor && (WINDOW_RE.test(name) || WINDOW_RE.test(layer));
-      if (!isDoor && !isWindow) continue;
-      const raw = blockLocalBBox(blocks[name]);
-      if (!raw) continue;
-      const rawWidth = raw.maxX - raw.minX;
-      const rawHeight = raw.maxY - raw.minY; // the block's own local "depth" axis reads as height in an elevation view
-      if (rawWidth < 1 || rawHeight < 1) continue;
-      const pos = scalePt(insert.position ?? { x: 0, y: 0 }, scale);
-      openings.push({
-        xMm: Math.round(pos.x - box.minX),
-        zMm: Math.round(pos.y - box.minY),
-        widthMm: Math.round(rawWidth * Math.abs(insert.xScale ?? 1) * scale),
-        heightMm: Math.round(rawHeight * Math.abs(insert.yScale ?? 1) * scale),
-        kind: isDoor ? "door" : "window",
-      });
-    }
-
-    views.push({ widthMm: Math.round(widthMm), heightMm: Math.round(heightMm), openings, memberHandles: new Set(cluster.map((e) => String(e.handle))) });
+    const view = measureElevationCluster(cluster, blocks, scale);
+    if (view) views.push(view);
   }
   return views;
+}
+
+/*
+  ---- Multi-view sheets: separating stacked floor plans/elevations by their
+  own drawn titles ----
+  A single sheet can carry MORE than one plan view — a real reference file
+  turned out to have "GROUND FLOOR PLAN", "FIRST FLOOR PLAN", and
+  "TERRACEFLOOR PLAN" (no space — real files are messy) stacked directly
+  above/below each other, plus a "FRONT ELEVATION", all within the same
+  loose neighborhood and, in places, close enough to be part of the same
+  connected-proximity blob. clusterEntitiesByProximity's tight connectivity
+  threshold (see its doc) cleanly separates genuinely distinct views when
+  there's real drawn space between them, but stacked-close sheets like this
+  one can fuse two adjacent views into one blob — which is exactly why that
+  file's elevation cluster came out an implausible 37.9m x 11.1m (several
+  floors' worth of content, not one facade) and its floor plan lost most of
+  its own wall geometry to the same blob.
+
+  Where multiple view TITLES exist (a title is unambiguous — a person wrote
+  "GROUND FLOOR PLAN" specifically to say what this region of the sheet
+  is), nearest-title assignment is more reliable than connectivity for
+  telling views apart: every entity is assigned to whichever titled view's
+  own label sits closest to it. This still can't perfectly reconstruct an
+  architect's real layout intent (a mis-titled or off-center label would
+  mis-assign entities near the boundary) — but it degrades far more gently
+  than blob-fusion does, and it's only used at all when there are at least
+  two titles to anchor it.
+
+  This app has no multi-storey extrusion (floorHeightMm applies identically
+  to every wall), so only ONE plan-kind view is modeled — the one whose
+  title reads as the entry/ground level, or (lacking that) whichever
+  qualifies as a specific floor level at all — every other view's entities
+  (other floors, elevations, sections) are excluded from wall-pairing so
+  they can't corrupt the modeled floor, exactly like a single elevation
+  view already was. Which other floor levels existed but weren't modeled
+  is surfaced back to the caller (see extractViews) rather than silently
+  dropped.
+*/
+type ViewKind = "plan" | "elevation" | "section";
+// Lower = more likely to be the building's entry level, and preferred as
+// the ONE plan-kind view this app models. Roof/terrace/site plans are
+// pushed high enough that they're never picked as the primary as long as
+// any properly floor-numbered plan title also exists (see
+// PRIMARY_PLAN_MAX_RANK) — a roof or site layout is a different kind of
+// drawing than a building's own interior floor plan.
+function planLevelRank(t: string): number {
+  if (/\bsite\b/.test(t)) return 200;
+  if (/\btop\b/.test(t)) return 102;
+  if (/\broof\b/.test(t)) return 101;
+  if (/\bterrace/.test(t)) return 100; // matches both "terrace" and the real file's un-spaced "terracefloor"
+  if (/\bbasement\b/.test(t)) return -2;
+  if (/\bstilt\b/.test(t)) return -1;
+  if (/\bground\b/.test(t)) return 0;
+  if (/\bmezzanine\b/.test(t)) return 0.5;
+  if (/\bfirst\b/.test(t)) return 1;
+  if (/\bsecond\b/.test(t)) return 2;
+  if (/\bthird\b/.test(t)) return 3;
+  if (/\bfourth\b/.test(t)) return 4;
+  if (/\bfifth\b/.test(t)) return 5;
+  return 0; // a bare "FLOOR PLAN"/"PLAN" with no level qualifier — assume it's the (only) main one
+}
+// Only a plan title in this range is ever picked as the ONE modeled floor
+// — see planLevelRank's doc. Kept out of PRIMARY_PLAN_MAX_RANK's own
+// selection so a sheet with only a "SITE PLAN"/"ROOF PLAN" title (and no
+// real floor-level plan title) never has a non-interior drawing picked as
+// if it were the building.
+const PRIMARY_PLAN_MAX_RANK = 5;
+
+function classifyViewTitle(rawText: string): { kind: ViewKind; levelRank: number } | null {
+  const clean = cleanMTextLabel(rawText);
+  const t = clean.toLowerCase();
+  if (SECTION_TITLE_RE.test(clean)) return { kind: "section", levelRank: NaN };
+  if (ELEVATION_TITLE_RE.test(clean)) return { kind: "elevation", levelRank: NaN };
+  if (!/\bplan\b/.test(t)) return null; // require an explicit "...plan" label — avoid matching e.g. a room simply named "plant room"
+  return { kind: "plan", levelRank: planLevelRank(t) };
+}
+
+type ViewAnchor = { title: string; kind: ViewKind; levelRank: number; position: Pt };
+
+function centroidOf(pts: Pt[]): Pt | null {
+  if (pts.length === 0) return null;
+  let sx = 0,
+    sy = 0;
+  for (const p of pts) {
+    sx += p.x;
+    sy += p.y;
+  }
+  return { x: sx / pts.length, y: sy / pts.length };
+}
+
+export type ViewPartition = {
+  elevationViews: ElevationView[];
+  excludeHandles: Set<string>;
+  primaryPlanTitle: string | null;
+  otherLevelTitles: string[];
+  otherLevelEntityCount: number;
+};
+
+/**
+ * Only engages when the sheet has at least two of its own view titles to
+ * anchor on (see this section's module doc) — a typical single-plan or
+ * plan+one-elevation file has zero or one, and returns null so callers
+ * fall back to extractElevationViews' proximity-based approach unchanged.
+ */
+export function partitionByViewTitles(dxf: IDxf, scale: number): ViewPartition | null {
+  const entities = dxf.entities ?? [];
+  const blocks = dxf.blocks ?? {};
+
+  const anchors: ViewAnchor[] = [];
+  for (const e of entities) {
+    let raw: string | undefined;
+    let pos: Pt | undefined;
+    if (e.type === "TEXT") {
+      raw = (e as ITextEntity).text;
+      pos = (e as ITextEntity).startPoint;
+    } else if (e.type === "MTEXT") {
+      raw = (e as IMtextEntity).text;
+      pos = (e as IMtextEntity).position;
+    }
+    if (!raw || !pos) continue;
+    const classified = classifyViewTitle(raw);
+    if (!classified) continue;
+    anchors.push({ title: cleanMTextLabel(raw), kind: classified.kind, levelRank: classified.levelRank, position: scalePt(pos, scale) });
+  }
+  if (anchors.length < 2) return null;
+
+  // Nearest-title assignment has no natural notion of "too far to belong
+  // to ANY of these views" on its own — every entity gets assigned to
+  // WHICHEVER anchor is least-far, even one a kilometer away (confirmed
+  // against the real reference file: an unrelated stray block pasted far
+  // off on the same sheet got swept into the elevation view this way,
+  // inflating its measured size to over a kilometer). A real multi-view
+  // sheet's own views sit within some bounded neighborhood of each other
+  // (that's what makes them "the same sheet"); an assignment cap derived
+  // from how far apart the titles THEMSELVES are — generous, but bounded —
+  // tells genuine view content (however far it spreads from its own
+  // caption) apart from unrelated material that just happens to be
+  // nearest, in relative terms, to one particular title.
+  let maxAnchorSpreadMm = 0;
+  for (let i = 0; i < anchors.length; i++) {
+    for (let j = i + 1; j < anchors.length; j++) {
+      maxAnchorSpreadMm = Math.max(maxAnchorSpreadMm, dist(anchors[i].position, anchors[j].position));
+    }
+  }
+  const assignmentCapMm = Math.max(maxAnchorSpreadMm * 4, 20000); // floor of 20m so two titles sitting close together still get a workable radius
+
+  // Nearest-title assignment: every entity within the cap belongs to
+  // whichever titled view's own label sits closest to it (by its own
+  // representative points' centroid) — see module doc for why this beats
+  // connectivity when views are titled but drawn close/touching. Anything
+  // farther than the cap from every title is left unassigned entirely
+  // (not excluded, not counted as any view) so it passes through to the
+  // ordinary classifier untouched, same as it always has — the existing
+  // footprint-outlier handling there is what disposes of it.
+  const groups: IEntity[][] = anchors.map(() => []);
+  for (const e of entities) {
+    const centroid = centroidOf(entityClusterPoints(e).map((p) => scalePt(p, scale)));
+    if (!centroid) continue; // no measurable position (e.g. a HATCH with no direct points) — can't be assigned, left out of every view
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < anchors.length; i++) {
+      const d = dist(centroid, anchors[i].position);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    if (bestDist > assignmentCapMm) continue;
+    groups[bestIdx].push(e);
+  }
+
+  const planIdxs = anchors.map((a, i) => i).filter((i) => anchors[i].kind === "plan");
+  const eligiblePlanIdxs = planIdxs.filter((i) => anchors[i].levelRank <= PRIMARY_PLAN_MAX_RANK);
+  // No properly floor-numbered plan title at all (e.g. only a "SITE PLAN"
+  // or "ROOF PLAN" title exists) — don't attempt to pick a "primary" among
+  // non-interior drawings; leave every plan-kind group unexcluded so they
+  // all still feed the ordinary classifier together, same as before this
+  // partitioning existed.
+  const primaryIdx =
+    eligiblePlanIdxs.length > 0
+      ? eligiblePlanIdxs.reduce((best, i) => (anchors[i].levelRank < anchors[best].levelRank || (anchors[i].levelRank === anchors[best].levelRank && groups[i].length > groups[best].length) ? i : best))
+      : null;
+
+  const excludeHandles = new Set<string>();
+  const otherLevelTitles: string[] = [];
+  let otherLevelEntityCount = 0;
+  const elevationViews: ElevationView[] = [];
+
+  for (let i = 0; i < anchors.length; i++) {
+    const anchor = anchors[i];
+    const group = groups[i];
+    if (anchor.kind === "elevation") {
+      const view = measureElevationCluster(group, blocks, scale);
+      if (view) elevationViews.push(view);
+      // Either way — measured into a real panel, or too small/malformed to
+      // confidently measure — this group's own dense line/arc texture must
+      // stay out of the plan's wall-pairing (the original elevation-vs-plan
+      // contamination bug this whole feature started from).
+      for (const e of group) excludeHandles.add(String(e.handle));
+      continue;
+    }
+    if (anchor.kind === "section") {
+      for (const e of group) excludeHandles.add(String(e.handle));
+      continue;
+    }
+    // plan-kind
+    if (i === primaryIdx) continue; // this is the one view left in, everything else in this loop gets excluded
+    for (const e of group) excludeHandles.add(String(e.handle));
+    if (eligiblePlanIdxs.length > 0) {
+      // only count/name this as a genuine "other floor" when a primary WAS
+      // chosen — otherwise every plan group is left in (see primaryIdx
+      // above) and none of this is actually being excluded as a floor.
+      otherLevelTitles.push(anchor.title);
+      otherLevelEntityCount += group.length;
+    }
+  }
+
+  return {
+    elevationViews,
+    excludeHandles,
+    primaryPlanTitle: primaryIdx != null ? anchors[primaryIdx].title : null,
+    otherLevelTitles,
+    otherLevelEntityCount,
+  };
+}
+
+/**
+ * Single entry point for both dwg.ts and index.ts: tries the titled
+ * multi-view partition first (see partitionByViewTitles), and only falls
+ * back to the older single-elevation, proximity-based extraction when the
+ * sheet doesn't carry enough of its own view titles to anchor that.
+ */
+export function extractViews(dxf: IDxf, scale: number): { elevationViews: ElevationView[]; excludeHandles?: Set<string>; otherLevelTitles: string[]; otherLevelEntityCount: number } {
+  const partition = partitionByViewTitles(dxf, scale);
+  if (partition) {
+    return {
+      elevationViews: partition.elevationViews,
+      excludeHandles: partition.excludeHandles.size > 0 ? partition.excludeHandles : undefined,
+      otherLevelTitles: partition.otherLevelTitles,
+      otherLevelEntityCount: partition.otherLevelEntityCount,
+    };
+  }
+  const elevationViews = extractElevationViews(dxf, scale);
+  const excludeHandles = elevationViews.length > 0 ? new Set(elevationViews.flatMap((v) => [...v.memberHandles])) : undefined;
+  return { elevationViews, excludeHandles, otherLevelTitles: [], otherLevelEntityCount: 0 };
 }
