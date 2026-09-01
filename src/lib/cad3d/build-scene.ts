@@ -123,6 +123,82 @@ function makeBumpTexture(size: number, intensity: number): THREE.Texture {
   });
 }
 
+/*
+  ---- Procedural ground + sky ----
+  Same "generated, not fetched" constraint as the wall/elevation textures
+  above: this app has no bundled skybox photo or grass texture, so the
+  outdoor environment around the model is drawn at runtime instead. This is
+  a lighting/environment upgrade, not invented building detail — nothing
+  here claims to represent the actual site the drawing is on, which is why
+  it's a generic lawn + sky rather than, say, a guessed paving pattern tied
+  to the file.
+  */
+let cachedGroundTexture: THREE.Texture | null = null;
+function makeGroundTexture(): THREE.Texture {
+  if (cachedGroundTexture) return cachedGroundTexture;
+  cachedGroundTexture = createCanvasTexture(256, (ctx, s) => {
+    ctx.fillStyle = "#8fae6a";
+    ctx.fillRect(0, 0, s, s);
+    for (let i = 0; i < 4000; i++) {
+      const x = Math.random() * s,
+        y = Math.random() * s;
+      const a = Math.random() * 0.12;
+      ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(0,50,0,${a})`;
+      ctx.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 2);
+    }
+  });
+  return cachedGroundTexture;
+}
+
+/**
+ * The ground plane's ONE shared texture pair (see makeGroundTexture) tiled
+ * to roughly one grass-noise repeat per 2 real-world meters, so a huge
+ * site doesn't stretch it into a giant blur and a small courtyard doesn't
+ * over-repeat it into visible noise. `sizeM` is the ground plane's actual
+ * on-screen size in meters — callers pass the same size they build the
+ * plane geometry with.
+ */
+export function buildGroundMaterial(sizeM: number): THREE.MeshStandardMaterial {
+  if (!canUseCanvas()) return new THREE.MeshStandardMaterial({ color: 0x8fae6a, roughness: 0.95 });
+  const colorTex = makeGroundTexture();
+  const bumpTex = makeBumpTexture(128, 0.5);
+  const repeats = Math.max(4, Math.round(sizeM / 2));
+  colorTex.repeat.set(repeats, repeats);
+  bumpTex.repeat.set(repeats * 2, repeats * 2);
+  return new THREE.MeshStandardMaterial({ map: colorTex, bumpMap: bumpTex, bumpScale: 0.012, roughness: 0.95, metalness: 0 });
+}
+
+let cachedSkyTexture: THREE.Texture | null = null;
+
+/**
+ * A flat vertical gradient for scene.background — not a true direction-
+ * aware sky (that needs an equirectangular environment map this app has no
+ * photo asset to supply, and would need a real-time-updated render target
+ * to stay correct as the camera orbits), but a cheap, honest stand-in: pale
+ * sky blue fading to a warm near-white horizon reads as "outdoors" behind
+ * the model instead of the flat beige backdrop it replaces. Falls back to
+ * a flat color under the headless test harness, same pattern as every
+ * other texture in this module.
+ */
+export function buildSkyBackground(): THREE.Color | THREE.Texture {
+  if (!canUseCanvas()) return new THREE.Color(0xcfe4ea);
+  if (cachedSkyTexture) return cachedSkyTexture;
+  const c = document.createElement("canvas");
+  c.width = 2;
+  c.height = 256;
+  const ctx = c.getContext("2d")!;
+  const grad = ctx.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, "#7fa9d8");
+  grad.addColorStop(0.55, "#cfe0e8");
+  grad.addColorStop(1, "#f5efdc");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 2, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  cachedSkyTexture = tex;
+  return tex;
+}
+
 let cachedWallMaterial: THREE.MeshStandardMaterial | null = null;
 let cachedFlatWallMaterial: THREE.MeshStandardMaterial | null = null;
 
@@ -154,6 +230,57 @@ function getWallMaterial(color: number): THREE.MeshStandardMaterial {
   bumpTex.repeat.set(6, 3);
   cachedWallMaterial = new THREE.MeshStandardMaterial({ map: colorTex, bumpMap: bumpTex, bumpScale: 0.012, roughness: 0.85, metalness: 0.02 });
   return cachedWallMaterial;
+}
+
+const cachedLayerMaterials = new Map<string, THREE.MeshStandardMaterial>();
+function getKeyedMaterial(key: string, build: () => THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
+  const cached = cachedLayerMaterials.get(key);
+  if (cached) return cached;
+  const mat = build();
+  cachedLayerMaterials.set(key, mat);
+  return mat;
+}
+
+/**
+ * "Distinguishing materials like stone vs plaster vs metal where the
+ * file's layers hint at them" — every wall is still just an extruded box
+ * (no file inspected in this project has drawn stone coursing or brick
+ * bonds as real geometry), but some CAD layer-naming conventions do say
+ * what a wall/railing is actually made of (an "A-WALL-STONE" or "MS
+ * RAILING" layer, say) even when the geometry itself doesn't show it. This
+ * reads the wall's own layerName for that hint and swaps in a differently
+ * colored/textured material when one matches — purely additive: a wall on
+ * an unrecognized layer name (which is every wall in every file inspected
+ * so far — see getWallMaterial's doc) falls straight through to the same
+ * shared default plaster material as before, so this changes nothing for
+ * files that carry no such hint.
+ */
+function getWallMaterialForLayer(layerName: string | null | undefined): THREE.MeshStandardMaterial {
+  const name = (layerName ?? "").toLowerCase();
+  if (!canUseCanvas()) return getWallMaterial(COLORS.wall);
+  if (/glass|glaz/.test(name)) {
+    return getKeyedMaterial("glass", () => new THREE.MeshStandardMaterial({ color: 0xbfe0e8, roughness: 0.06, metalness: 0.1, transparent: true, opacity: 0.35 }));
+  }
+  if (/stone|marble|granite/.test(name)) {
+    return getKeyedMaterial("stone", () => {
+      const colorTex = makeTileTexture("#a89e8c", "#6f6555");
+      const bumpTex = makeBumpTexture(128, 0.45);
+      colorTex.repeat.set(4, 1.6);
+      bumpTex.repeat.set(8, 3);
+      return new THREE.MeshStandardMaterial({ map: colorTex, bumpMap: bumpTex, bumpScale: 0.02, roughness: 0.8, metalness: 0.05 });
+    });
+  }
+  if (/brick/.test(name)) {
+    return getKeyedMaterial("brick", () => {
+      const colorTex = makeTileTexture("#a8543a", "#7a4632");
+      colorTex.repeat.set(6, 2.4);
+      return new THREE.MeshStandardMaterial({ map: colorTex, roughness: 0.9, metalness: 0.02 });
+    });
+  }
+  if (/(^|[^a-z])(ms|steel|metal|iron)([^a-z]|$)|railing/.test(name)) {
+    return getKeyedMaterial("metal", () => new THREE.MeshStandardMaterial({ color: 0x9199a1, roughness: 0.35, metalness: 0.85 }));
+  }
+  return getWallMaterial(COLORS.wall);
 }
 
 let cachedElevationPanelMaterial: THREE.MeshStandardMaterial | null = null;
@@ -360,7 +487,7 @@ function buildWall(wall: WallInput, openings: OpeningInput[], windowSillMm: numb
     const midT = (s.t1 + s.t2) / 2;
     const midZ = (s.z1 + s.z2) / 2;
     const geo = new THREE.BoxGeometry(Math.max(segLen, 1) * MM, Math.max(segHeight, 1) * MM, Math.max(thickness, 1) * MM);
-    const mesh = new THREE.Mesh(geo, getWallMaterial(COLORS.wall));
+    const mesh = new THREE.Mesh(geo, getWallMaterialForLayer(wall.layerName));
     const center = toThree(start.x + ux * midT, start.y + uy * midT, midZ);
     mesh.position.copy(center);
     mesh.rotation.y = -angle;

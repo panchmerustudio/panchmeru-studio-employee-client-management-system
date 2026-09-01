@@ -4,7 +4,7 @@
  * Run with: npx tsx scripts/test-cad3d-build.ts
  */
 import * as THREE from "three";
-import { buildScene, clusterFurniturePositions, inferRoomLabel, furnitureLabelText, type CadEntityInput } from "../src/lib/cad3d/build-scene";
+import { buildScene, clusterFurniturePositions, inferRoomLabel, furnitureLabelText, buildGroundMaterial, buildSkyBackground, type CadEntityInput } from "../src/lib/cad3d/build-scene";
 
 const wallHeight = 3000;
 
@@ -277,6 +277,52 @@ if (combinedFocusBox) {
     Math.abs(size.x - 8) < 0.5
   );
 }
+
+/*
+  "Push the visual quality further" — ground/sky/material regression cover.
+  The actual THREE.Scene ground plane, sky background, and grid live in
+  model-viewer.tsx (a browser component this headless harness can't mount),
+  so what's checkable here is: (1) the exported texture/material builders
+  buildGroundMaterial()/buildSkyBackground() run without a DOM and return a
+  sane flat-color fallback instead of crashing (same "no `document`" guard
+  as every other procedural texture in this module — see canUseCanvas's
+  doc), and (2) walls whose layerName hints at a real-world material
+  (stone/brick/glass/metal) still build correctly and, under this same
+  headless mode, fall back to the identical shared default material as an
+  unlabeled wall — the layer-driven material swap only activates where a
+  canvas is available (i.e. in the browser), so headless behavior must stay
+  byte-for-byte what it was before this feature existed.
+*/
+const groundMat = buildGroundMaterial(40);
+check("buildGroundMaterial() returns a real material without crashing headlessly", groundMat instanceof THREE.MeshStandardMaterial);
+check("headless ground material has no canvas texture (flat-color fallback, since there's no `document` here)", !groundMat.map);
+
+const sky = buildSkyBackground();
+check("buildSkyBackground() falls back to a flat THREE.Color headlessly (no `document` to draw a gradient canvas)", sky instanceof THREE.Color);
+
+const materialLayerNames = ["A-WALL", "A-WALL-STONE", "BRICK-FACADE", "GLAZING", "MS-RAILING", "random-layer-name"];
+const materialFixture: CadEntityInput[] = materialLayerNames.map((layerName, i) => ({
+  id: `mw${i}`,
+  type: "wall",
+  layerName,
+  geometry: { start: { x: i * 5000, y: 0 }, end: { x: i * 5000 + 4000, y: 0 } },
+  depthMm: 230,
+  heightMm: wallHeight,
+}));
+const { group: materialGroup } = buildScene(materialFixture, { windowSillMm: 900 });
+const materialWallMeshCount = materialLayerNames.filter((_, i) =>
+  materialGroup.children.some((c) => c.children.some((m) => m.userData?.cadEntityId === `mw${i}` && m.userData?.cadType === "wall"))
+).length;
+check("walls on stone/brick/glass/metal-hinting layer names still build without crashing", materialWallMeshCount === materialLayerNames.length);
+const wallMaterials = materialLayerNames.map((_, i) => {
+  const wallGroup = materialGroup.children.find((c) => c.children.some((m) => m.userData?.cadEntityId === `mw${i}`));
+  const mesh = wallGroup?.children.find((m) => (m as THREE.Mesh).isMesh) as THREE.Mesh | undefined;
+  return mesh?.material;
+});
+check(
+  "headlessly (no canvas), every wall shares the exact same default material regardless of layer-name material hints — unchanged from before this feature",
+  wallMaterials.every((m) => !!m && m === wallMaterials[0])
+);
 
 function findMesh(obj: THREE.Object3D, pred: (m: THREE.Object3D) => boolean): THREE.Object3D | null {
   if (pred(obj)) return obj;

@@ -6,7 +6,16 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
 import { OBJExporter } from "three/addons/exporters/OBJExporter.js";
-import { buildScene, buildFloorFinishMaterial, FLOOR_FINISHES, type CadEntityInput, type ValidationRow, type FloorRegion } from "@/lib/cad3d/build-scene";
+import {
+  buildScene,
+  buildFloorFinishMaterial,
+  buildGroundMaterial,
+  buildSkyBackground,
+  FLOOR_FINISHES,
+  type CadEntityInput,
+  type ValidationRow,
+  type FloorRegion,
+} from "@/lib/cad3d/build-scene";
 import { approveCadModel } from "../actions";
 import { Icon } from "@/components/icon";
 import { SourceDrawing2D } from "./source-drawing-2d";
@@ -88,17 +97,8 @@ export function ModelViewer({
     const veryHeavyScene = meshCount > 900;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf3f1ea);
     scene.add(group);
     sceneRef.current = scene;
-    const grid = new THREE.GridHelper(60, 60, 0xc9c3b3, 0xe7e2d6);
-    scene.add(grid);
-
-    // Soft sky/ground fill plus one shadow-casting sun — walls/floor/
-    // furniture below all set castShadow/receiveShadow, so this is what
-    // actually grounds them instead of the flat, shadowless look before.
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x3a3428, 0.55));
-    scene.add(new THREE.AmbientLight(0xffffff, 0.2));
 
     // sceneBox covers EVERY entity — used only for how far the camera is
     // allowed to pull back and where the far clip plane sits, so nothing
@@ -111,6 +111,14 @@ export function ModelViewer({
     // what made walls and furniture shrink to illegible flat lines even
     // after zooming in a little — the camera had to back out for kilometers
     // to fit everything, so a 3m-tall wall was sub-pixel from that far away.
+    //
+    // Computed here — before the ground/grid/lights below — because none of
+    // those raw CAD coordinates are ever recentered near the world origin
+    // (toThree() in build-scene.ts scales them, it doesn't translate them),
+    // so a real building can sit anywhere in world space. The ground plane
+    // and grid need focusCenter/focusMaxDim for the same reason the sun
+    // light and shadow frustum already did — a fixed-at-origin grid is
+    // invisible or irrelevant once a building isn't near (0,0,0).
     const sceneBox = new THREE.Box3().setFromObject(group);
     const sceneSize = sceneBox.getSize(new THREE.Vector3());
     const sceneMaxDim = Math.max(sceneSize.x, sceneSize.y, sceneSize.z, 3);
@@ -118,6 +126,35 @@ export function ModelViewer({
     const focusCenter = focusBox ? focusBox.getCenter(new THREE.Vector3()) : sceneBox.getCenter(new THREE.Vector3());
     const focusSize = focusBox ? focusBox.getSize(new THREE.Vector3()) : sceneSize;
     const focusMaxDim = Math.max(focusSize.x, focusSize.y, focusSize.z, 3);
+
+    // Gradient sky behind the model instead of a flat wall color, and a
+    // textured ground plane (in place of the old fixed 60x60 grid that was
+    // stuck at the world origin regardless of where the building's own
+    // coordinates actually put it) sized and centered on the whole scene so
+    // it still reads as ground under every cluster, not just the focused
+    // one. A faint grid line overlay stays on top of it, but now follows
+    // the focused cluster the same way the sun light already does.
+    scene.background = buildSkyBackground();
+    const groundY = (focusBox ?? sceneBox).min.y - 0.005;
+    const groundSizeM = Math.max(sceneMaxDim * 4, 20);
+    const sceneCenter = sceneBox.getCenter(new THREE.Vector3());
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundSizeM, groundSizeM), buildGroundMaterial(groundSizeM));
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(sceneCenter.x, groundY, sceneCenter.z);
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    const gridSize = Math.max(focusMaxDim * 3, 10);
+    const gridDivisions = Math.min(100, Math.max(10, Math.round(gridSize)));
+    const grid = new THREE.GridHelper(gridSize, gridDivisions, 0xc9c3b3, 0xe7e2d6);
+    grid.position.set(focusCenter.x, groundY + 0.003, focusCenter.z);
+    scene.add(grid);
+
+    // Soft sky/ground fill plus one shadow-casting sun — walls/floor/
+    // furniture below all set castShadow/receiveShadow, so this is what
+    // actually grounds them instead of the flat, shadowless look before.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x3a3428, 0.55));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.2));
 
     const dir = new THREE.DirectionalLight(0xfff3df, 2.2);
     dir.position.set(focusCenter.x + focusMaxDim * 0.6, focusCenter.y + focusMaxDim * 1.2, focusCenter.z + focusMaxDim * 0.5);
@@ -139,6 +176,18 @@ export function ModelViewer({
     dir.shadow.camera.far = focusMaxDim * 4;
     scene.add(dir);
     scene.add(dir.target);
+
+    // Cool, dim bounce-light fill from the opposite side of the sun — no
+    // shadow casting (that's what the ambient/hemisphere lights above are
+    // for on their own, but a directional fill reads more like real sky
+    // bounce off one side of a building than a flat ambient term alone,
+    // softening the previously fully-black unlit faces).
+    const fill = new THREE.DirectionalLight(0xbdd6ea, 0.55);
+    fill.position.set(focusCenter.x - focusMaxDim * 0.7, focusCenter.y + focusMaxDim * 0.4, focusCenter.z - focusMaxDim * 0.6);
+    fill.target.position.copy(focusCenter);
+    fill.castShadow = false;
+    scene.add(fill);
+    scene.add(fill.target);
 
     const height = 420;
     const width = container.clientWidth || 640;
