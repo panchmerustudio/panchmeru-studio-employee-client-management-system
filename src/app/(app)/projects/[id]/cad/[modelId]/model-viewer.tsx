@@ -9,6 +9,7 @@ import { OBJExporter } from "three/addons/exporters/OBJExporter.js";
 import { buildScene, buildFloorFinishMaterial, FLOOR_FINISHES, type CadEntityInput, type ValidationRow, type FloorRegion } from "@/lib/cad3d/build-scene";
 import { approveCadModel } from "../actions";
 import { Icon } from "@/components/icon";
+import { SourceDrawing2D } from "./source-drawing-2d";
 
 /**
  * Renders the generated 3D model (Three.js, real WebGL — not a mockup),
@@ -52,6 +53,15 @@ export function ModelViewer({
   const floorRegionsRef = useRef<FloorRegion[]>([]);
   const [paintPanel, setPaintPanel] = useState<{ regionId: string; roomLabel: string | null; areaM2: number; finishId: string } | null>(null);
   const router = useRouter();
+
+  // "I should be able to see that drawing as well so that I can compare
+  // whether the 3D model generated is according to the drawing" — a flat
+  // 2D read-out of the exact same entities the 3D model is built from,
+  // shown side by side so a mismatch is something a person can actually
+  // point at (see source-drawing-2d.tsx's doc for what it is/isn't). On by
+  // default whenever there's something for it to show.
+  const hasSourceDrawing = entities.some((e) => e.type === "elevation_panel" || e.type === "wall" || e.type === "room");
+  const [showDrawing, setShowDrawing] = useState(true);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -455,51 +465,66 @@ export function ModelViewer({
 
   return (
     <div className="space-y-4">
-      <div className="relative">
-        <div ref={containerRef} className="card overflow-hidden" style={{ height: 420, touchAction: "none" }} />
-        <div className="absolute right-2 bottom-2 flex flex-col gap-1">
-          <button type="button" onClick={() => zoomBy(0.7)} aria-label="Zoom in" className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-foreground shadow active:bg-white">
-            <Icon name="plus" className="h-5 w-5" />
-          </button>
-          <button type="button" onClick={() => zoomBy(1 / 0.7)} aria-label="Zoom out" className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-foreground shadow active:bg-white">
-            <Icon name="minus" className="h-5 w-5" />
-          </button>
-          <button type="button" onClick={resetView} aria-label="Reset view" className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-foreground shadow active:bg-white">
-            <Icon name="maximize" className="h-5 w-5" />
+      {hasSourceDrawing && (
+        <div className="flex justify-end">
+          <button type="button" onClick={() => setShowDrawing((s) => !s)} className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-foreground hover:bg-slate-200">
+            <Icon name="grid" className="h-3.5 w-3.5" /> {showDrawing ? "Hide source drawing" : "Compare with source drawing"}
           </button>
         </div>
-        <div className="absolute left-2 top-2">
-          <button
-            type="button"
-            onClick={() => setViewMenuOpen((o) => !o)}
-            aria-label="Choose view"
-            className="flex h-10 items-center gap-1.5 rounded-lg bg-white/90 px-3 text-xs font-medium text-foreground shadow active:bg-white"
-          >
-            <Icon name="cube" className="h-4 w-4" /> Views
-          </button>
-          {viewMenuOpen && (
-            <div className="mt-1 grid w-40 grid-cols-2 gap-1 rounded-lg bg-white/95 p-1.5 shadow">
-              {(
-                [
-                  ["iso", "Isometric"],
-                  ["top", "Top"],
-                  ["bottom", "Bottom"],
-                  ["front", "Front"],
-                  ["back", "Back"],
-                  ["left", "Left"],
-                  ["right", "Right"],
-                ] as const
-              ).map(([preset, label]) => (
-                <button key={preset} type="button" onClick={() => setView(preset)} className="rounded px-2 py-1.5 text-left text-xs hover:bg-slate-100">
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
+      )}
+      <div className={hasSourceDrawing && showDrawing ? "grid gap-3 md:grid-cols-2" : ""}>
+        {hasSourceDrawing && showDrawing && (
+          <div style={{ height: 420 }}>
+            <SourceDrawing2D entities={entities} />
+          </div>
+        )}
+        <div className="relative">
+          <div ref={containerRef} className="card overflow-hidden" style={{ height: 420, touchAction: "none" }} />
+          <div className="absolute right-2 bottom-2 flex flex-col gap-1">
+            <button type="button" onClick={() => zoomBy(0.7)} aria-label="Zoom in" className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-foreground shadow active:bg-white">
+              <Icon name="plus" className="h-5 w-5" />
+            </button>
+            <button type="button" onClick={() => zoomBy(1 / 0.7)} aria-label="Zoom out" className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-foreground shadow active:bg-white">
+              <Icon name="minus" className="h-5 w-5" />
+            </button>
+            <button type="button" onClick={resetView} aria-label="Reset view" className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-foreground shadow active:bg-white">
+              <Icon name="maximize" className="h-5 w-5" />
+            </button>
+          </div>
+          <div className="absolute left-2 top-2">
+            <button
+              type="button"
+              onClick={() => setViewMenuOpen((o) => !o)}
+              aria-label="Choose view"
+              className="flex h-10 items-center gap-1.5 rounded-lg bg-white/90 px-3 text-xs font-medium text-foreground shadow active:bg-white"
+            >
+              <Icon name="cube" className="h-4 w-4" /> Views
+            </button>
+            {viewMenuOpen && (
+              <div className="mt-1 grid w-40 grid-cols-2 gap-1 rounded-lg bg-white/95 p-1.5 shadow">
+                {(
+                  [
+                    ["iso", "Isometric"],
+                    ["top", "Top"],
+                    ["bottom", "Bottom"],
+                    ["front", "Front"],
+                    ["back", "Back"],
+                    ["left", "Left"],
+                    ["right", "Right"],
+                  ] as const
+                ).map(([preset, label]) => (
+                  <button key={preset} type="button" onClick={() => setView(preset)} className="rounded px-2 py-1.5 text-left text-xs hover:bg-slate-100">
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <p className="text-center text-xs text-muted">
         Drag to orbit, pinch or use the +/− buttons to zoom. &quot;Views&quot; jumps to a standard top/front/side view. Tap a room&apos;s floor to change its tile or paint.
+        {hasSourceDrawing && " The source drawing panel is plotted from the exact same measured entities as the 3D model — not the original DWG/DXF file itself."}
       </p>
 
       {paintPanel && (
