@@ -11,6 +11,7 @@ import { formatDateTime } from "@/lib/format";
 import { MissingInfoForm } from "./missing-info-form";
 import { ModelViewerClient } from "./model-viewer-client";
 import { DeleteModelButton } from "./delete-model-button";
+import { LevelPicker } from "./level-picker";
 
 const TYPE_LABELS: Record<string, string> = {
   wall: "Walls",
@@ -83,6 +84,17 @@ export default async function CadModelPage({ params }: { params: Promise<{ id: s
               {model.ignoredAnnotationCount > 0 && `${model.ignoredAnnotationCount} dimension/text/hatch annotations were ignored (not building geometry).`}
             </p>
           )}
+        </SectionCard>
+      )}
+
+      {canCreate && model.otherLevelTitles.length > 0 && (
+        <SectionCard title="Multiple drawings on this sheet">
+          <LevelPicker
+            modelId={modelId}
+            currentTitle={model.primaryLevelTitle}
+            otherTitles={model.otherLevelTitles}
+            otherLevelEntityCount={model.otherLevelEntityCount}
+          />
         </SectionCard>
       )}
 

@@ -31,6 +31,9 @@ export type CadEntityInput = {
 
 export type ValidationRow = { id: string; type: string; label: string; dimension: string; cadValue: number; modelValue: number };
 
+/** What buildScene's returned focusBox is actually centered on — see its assignment in buildScene for why the camera framing needs to know this, not just the box itself. */
+export type FocusKind = "elevation" | "plan" | "scene";
+
 const MM = 1 / 1000; // Three scene units are meters; CAD data is millimeters
 const COLORS = {
   wall: 0xd8d2c4,
@@ -1759,7 +1762,7 @@ function computeFocusBox(walls: WallInput[], pointEntities: CadEntityInput[]): T
 export function buildScene(
   entities: CadEntityInput[],
   opts: { windowSillMm: number }
-): { group: THREE.Group; validation: ValidationRow[]; focusBox: THREE.Box3 | null; floorRegions: FloorRegion[] } {
+): { group: THREE.Group; validation: ValidationRow[]; focusBox: THREE.Box3 | null; focusKind: FocusKind; floorRegions: FloorRegion[] } {
   const group = new THREE.Group();
   const validation: ValidationRow[] = [];
 
@@ -1931,7 +1934,18 @@ export function buildScene(
   // framed on and what "Views"/Reset re-center on, taking priority over
   // computeFocusBox's plan-cluster pick (the floor plan, if this model also
   // has one, is still fully reachable by orbiting/zooming out).
-  const focusBox = elevationBox ?? computeFocusBox(walls, pointEntities);
+  const planFocusBox = computeFocusBox(walls, pointEntities);
+  const focusBox = elevationBox ?? planFocusBox;
+  // The camera framing itself has to differ by what's being focused on, not
+  // just where it's centered — a wide-but-short elevation panel (e.g. a
+  // real 38m x 11m front facade) framed with the SAME corner-view angle
+  // used for a plan's compact footprint reads as a bird's-eye/floor-plan
+  // look ("it has made it like a floor plan" — a real report against this
+  // exact case), because that angle is a constant ~30deg down regardless of
+  // proportions (see model-viewer.tsx's defaultCameraPosition). Callers use
+  // this to pick a front-on, near-eye-level framing instead when the focus
+  // is an elevation panel.
+  const focusKind: FocusKind = elevationBox ? "elevation" : planFocusBox ? "plan" : "scene";
 
-  return { group, validation, focusBox, floorRegions };
+  return { group, validation, focusBox, focusKind, floorRegions };
 }

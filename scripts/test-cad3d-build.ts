@@ -202,7 +202,8 @@ const elevationOnlyEntity: CadEntityInput = {
 
 // Case A: elevation-only model (no walls at all) — mirrors what
 // classifyDxf/extractElevationViews produce for a pure elevation sheet.
-const { group: elevOnlyGroup } = buildScene([elevationOnlyEntity], { windowSillMm: 900 });
+const { group: elevOnlyGroup, focusKind: elevOnlyFocusKind } = buildScene([elevationOnlyEntity], { windowSillMm: 900 });
+check('elevation-only model reports focusKind "elevation" (drives the front-on default camera, not the plan corner view)', elevOnlyFocusKind === "elevation");
 // The real app's WebGLRenderer recomputes every object's world matrix each
 // frame; here nothing has rendered yet, so nested groups' position offsets
 // (e.g. buildElevationPanel's own wrapping group) won't show up in a Box3
@@ -241,7 +242,8 @@ if (elevOnlyRelief instanceof THREE.Mesh) {
 // itself must be completely unaffected by the elevation entity being
 // present (they share no coordinate frame).
 const combinedEntities: CadEntityInput[] = [...outerRingWalls, elevationOnlyEntity];
-const { group: combinedGroup, focusBox: combinedFocusBox } = buildScene(combinedEntities, { windowSillMm: 900 });
+const { group: combinedGroup, focusBox: combinedFocusBox, focusKind: combinedFocusKind } = buildScene(combinedEntities, { windowSillMm: 900 });
+check('combined plan+elevation model still reports focusKind "elevation" (the elevation panel wins focus, per its own doc above)', combinedFocusKind === "elevation");
 combinedGroup.updateMatrixWorld(true);
 const combinedPanelMesh = findMesh(combinedGroup, (m) => m.userData?.cadEntityId === "elev1");
 check("elevation panel still builds when a floor plan is also present", !!combinedPanelMesh);
@@ -293,6 +295,24 @@ if (combinedFocusBox) {
   canvas is available (i.e. in the browser), so headless behavior must stay
   byte-for-byte what it was before this feature existed.
 */
+/*
+  focusKind regression cover — the actual "it made it look like a floor
+  plan" report this segment fixed (see defaultCameraPosition's doc in
+  model-viewer.tsx) was a wide real elevation panel (37.9m x 10.8m) getting
+  framed with the plan-shaped corner-view camera angle, not a
+  misclassification of the geometry itself. buildScene must report which
+  kind of thing focusBox is actually centered on so the camera framing can
+  differ accordingly.
+*/
+const { focusKind: planOnlyFocusKind } = buildScene(entities, { windowSillMm: 900 });
+check('a plain floor-plan model (walls, no elevation) reports focusKind "plan"', planOnlyFocusKind === "plan");
+
+const { focusKind: sceneFallbackFocusKind } = buildScene(
+  [{ id: "loose-chair", type: "furniture", layerName: "A-FURN", label: "chair", geometry: { position: { x: 0, y: 0 } }, widthMm: 500, depthMm: 500, heightMm: 850, rotationDeg: 0 }],
+  { windowSillMm: 900 }
+);
+check('a model with neither walls nor an elevation panel falls back to focusKind "scene"', sceneFallbackFocusKind === "scene");
+
 const groundMat = buildGroundMaterial(40);
 check("buildGroundMaterial() returns a real material without crashing headlessly", groundMat instanceof THREE.MeshStandardMaterial);
 check("headless ground material has no canvas texture (flat-color fallback, since there's no `document` here)", !groundMat.map);

@@ -47,7 +47,7 @@ export async function parseDwgBuffer(
   fileContent: ArrayBuffer,
   units: CadUnits,
   drawingHints?: { declaredType?: DeclaredDrawingType; preferredLevelKeyword?: string }
-): Promise<{ result: ClassificationResult; unitsResolution: UnitsResolution; elevationViews: ElevationView[]; otherLevelTitles: string[]; otherLevelEntityCount: number }> {
+): Promise<{ result: ClassificationResult; unitsResolution: UnitsResolution; elevationViews: ElevationView[]; otherLevelTitles: string[]; otherLevelEntityCount: number; primaryPlanTitle: string | null }> {
   const libredwg = await getLibreDwg();
 
   let dataPtr: number | undefined;
@@ -96,7 +96,7 @@ export async function parseDwgBuffer(
   // doc in classify.ts. drawingHints carries what a person explicitly said
   // about the file (see uploadCadModel's "drawing type"/"floor level"
   // fields) — used when the drawing's own titles can't answer that alone.
-  const { elevationViews, excludeHandles, otherLevelTitles, otherLevelEntityCount } = extractViews(dxf, scale, drawingHints);
+  const { elevationViews, excludeHandles, otherLevelTitles, otherLevelEntityCount, primaryPlanTitle } = extractViews(dxf, scale, drawingHints);
   const result = classifyDxf(dxf, scale, { excludeHandles });
 
   // "recognize the type of drawing and work accordingly": a sheet with no
@@ -109,5 +109,5 @@ export async function parseDwgBuffer(
   // drawing is shouldn't be second-guessed by a title-wording heuristic.
   const nonPlanReason = drawingHints?.declaredType === "plan" ? null : detectNonPlanDrawing(dxf, result);
   if (nonPlanReason && elevationViews.length === 0) throw new Error(nonPlanReason);
-  return { result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount };
+  return { result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount, primaryPlanTitle };
 }

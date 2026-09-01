@@ -13,7 +13,7 @@
 import { revalidatePath } from "next/cache";
 import { eq, and, inArray, isNull, or } from "drizzle-orm";
 import { db } from "@/db/client";
-import { cadModels, cadEntities, cadMissingInputs, projects } from "@/db/schema";
+import { cadModels, cadEntities, cadMissingInputs, projects, files } from "@/db/schema";
 import { requireUser, requirePermission } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
@@ -270,6 +270,7 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   let elevationViews: ElevationView[];
   let otherLevelTitles: string[];
   let otherLevelEntityCount: number;
+  let primaryPlanTitle: string | null;
   try {
     if (isDwg) {
       // DWG is Autodesk's proprietary binary format, but read directly here
@@ -278,7 +279,7 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       // is avoided) and its doc comment for the GPL-3.0 licensing note on
       // the parser this uses.
       const buffer = await readStoredFile(fileKey);
-      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount } = await parseDwgBuffer(
+      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount, primaryPlanTitle } = await parseDwgBuffer(
         buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer,
         units,
         drawingHints
@@ -289,7 +290,7 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       if (!looksLikeDxf(text)) {
         throw new Error("This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG.");
       }
-      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount } = parseDxfFile(text, units, drawingHints));
+      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount, primaryPlanTitle } = parseDxfFile(text, units, drawingHints));
     }
   } catch (err) {
     console.error("[cad] uploadCadModel failed:", err);
@@ -351,6 +352,11 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       entityCounts: elevationViews.length > 0 ? { ...result.entityCounts, elevation_view: elevationViews.length } : result.entityCounts,
       unclassifiedCount: result.unclassifiedCount,
       ignoredAnnotationCount: result.ignoredAnnotationCount,
+      primaryLevelTitle: primaryPlanTitle,
+      otherLevelTitles,
+      otherLevelEntityCount,
+      declaredType,
+      preferredLevelKeyword: preferredLevelKeyword ?? null,
       createdBy: actor.id,
     })
     .returning();
@@ -388,6 +394,132 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   });
   revalidatePath(`/projects/${projectId}/cad`);
   return model;
+}
+
+/**
+ * "If some drawing has two or three drawings, it should ask me which
+ * drawing" — a real report. uploadCadModel silently picks ONE plan-kind
+ * title as the primary level when a sheet has more than one (see
+ * partitionByViewTitles' doc in classify.ts), noting the rest only as a
+ * passive suffix on the model's name. The model page now shows those
+ * alternatives (model.otherLevelTitles) as an explicit choice — picking one
+ * calls this, which re-reads the ORIGINAL source file and re-parses it with
+ * that title preferred, replacing this model's geometry in place (same
+ * model id/URL/approval history) rather than requiring a whole re-upload.
+ */
+export async function regenerateCadModelLevel(modelId: string, levelTitle: string) {
+  const actor = await requirePermission(PERMISSIONS.CAD_CREATE);
+  const trimmedTitle = levelTitle.trim();
+  if (!trimmedTitle) throw new Error("Choose a drawing to model.");
+
+  const model = await db.query.cadModels.findFirst({ where: eq(cadModels.id, modelId) });
+  if (!model) throw new Error("Model not found.");
+  const sourceFile = await db.query.files.findFirst({ where: eq(files.id, model.sourceFileId) });
+  if (!sourceFile) throw new Error("The original uploaded file is missing — re-upload the drawing to switch which view is modeled.");
+
+  const lowerName = sourceFile.originalName.toLowerCase();
+  const isDwg = lowerName.endsWith(".dwg");
+  const declaredType = (model.declaredType as DeclaredDrawingType | null) ?? "auto";
+  const drawingHints = { declaredType, preferredLevelKeyword: trimmedTitle };
+
+  let result: ClassificationResult;
+  let unitsResolution: UnitsResolution;
+  let elevationViews: ElevationView[];
+  let otherLevelTitles: string[];
+  let otherLevelEntityCount: number;
+  let primaryPlanTitle: string | null;
+  try {
+    if (isDwg) {
+      const buffer = await readStoredFile(sourceFile.storageKey);
+      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount, primaryPlanTitle } = await parseDwgBuffer(
+        buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer,
+        model.units,
+        drawingHints
+      ));
+    } else {
+      const buffer = await readStoredFile(sourceFile.storageKey);
+      const text = buffer.toString("utf-8");
+      ({ result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount, primaryPlanTitle } = parseDxfFile(text, model.units, drawingHints));
+    }
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : "Couldn't re-read the original file to switch levels.");
+  }
+
+  // A person picked one of THIS model's own previously-detected titles, so
+  // the re-parse should land on exactly that title again — if it instead
+  // matched something else (the file changed since upload, or the title
+  // text wasn't unique), don't silently show them a different level than
+  // the one they asked for with no indication that happened.
+  if (primaryPlanTitle && primaryPlanTitle.toLowerCase() !== trimmedTitle.toLowerCase()) {
+    throw new Error(`Couldn't find "${trimmedTitle}" as its own distinct view anymore — the closest match was "${primaryPlanTitle}" instead. Re-upload the drawing if the source file has changed.`);
+  }
+
+  const elevationFloorHeightMm = elevationViews.find((v) => v.heightMm >= PLAUSIBLE_FLOOR_HEIGHT_MM.min && v.heightMm <= PLAUSIBLE_FLOOR_HEIGHT_MM.max)?.heightMm;
+  const valueForSpec = (s: MissingInputSpec) => (s.kind === "floor_height" && elevationFloorHeightMm != null ? elevationFloorHeightMm : DEFAULT_MM[s.kind]);
+  const missingSpecs = buildMissingInputs(result).map((s) =>
+    s.kind === "floor_height" && elevationFloorHeightMm != null ? { ...s, question: "Floor-to-ceiling height, measured from the elevation view in this file." } : s
+  );
+
+  // Replace this model's geometry entirely — same id, so its URL and any
+  // approval history stay put, but everything measured FROM the drawing
+  // (entities, the never-invented assumed defaults, which titles were
+  // "other") belongs to whichever level is modeled now, not the old one.
+  await db.delete(cadEntities).where(eq(cadEntities.modelId, modelId));
+  await db.delete(cadMissingInputs).where(eq(cadMissingInputs.modelId, modelId));
+  await db
+    .update(cadModels)
+    .set({
+      units: unitsResolution.effective,
+      status: "ready", // an existing approval was of the PREVIOUS level's geometry — it doesn't carry over to a different one
+      parseError: null,
+      approvedBy: null,
+      approvedAt: null,
+      entityCounts: elevationViews.length > 0 ? { ...result.entityCounts, elevation_view: elevationViews.length } : result.entityCounts,
+      unclassifiedCount: result.unclassifiedCount,
+      ignoredAnnotationCount: result.ignoredAnnotationCount,
+      primaryLevelTitle: primaryPlanTitle,
+      otherLevelTitles,
+      otherLevelEntityCount,
+      preferredLevelKeyword: trimmedTitle,
+      // These are re-derived fresh below via applyMissingInputValue, same
+      // as a first upload — the OLD values belonged to the level being
+      // replaced, and wall_default_thickness's own "which walls got the
+      // guess" matching (see applyMissingInputValue's doc) needs to start
+      // from null here, not the previous level's default.
+      floorHeightMm: null,
+      doorHeightMm: null,
+      windowHeightMm: null,
+      windowSillMm: null,
+      wallDefaultThicknessMm: null,
+    })
+    .where(eq(cadModels.id, modelId));
+
+  if (result.entities.length > 0) {
+    await db.insert(cadEntities).values(result.entities.map((e) => entityToRow(modelId, e)));
+  }
+  if (elevationViews.length > 0) {
+    await db.insert(cadEntities).values(elevationViews.map((v) => elevationViewToRow(modelId, v)));
+  }
+  if (missingSpecs.length > 0) {
+    for (const s of missingSpecs) await applyMissingInputValue(modelId, s.kind, valueForSpec(s));
+    await db.insert(cadMissingInputs).values(
+      missingSpecs.map((s) => ({ modelId, kind: s.kind, question: s.question, resolvedValueMm: valueForSpec(s), resolvedAt: new Date() }))
+    );
+  }
+
+  await recordAudit({
+    actor,
+    action: "cad.level_switched",
+    entityType: "cad_model",
+    entityId: modelId,
+    newState: {
+      levelTitle: trimmedTitle,
+      entityCounts: result.entityCounts,
+      otherLevelTitles,
+      otherLevelEntityCount,
+    },
+  });
+  revalidatePath(`/projects/${model.projectId}/cad/${modelId}`);
 }
 
 export async function resolveMissingInput(modelId: string, inputId: string, valueMm: number) {

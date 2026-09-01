@@ -41,6 +41,23 @@ export const cadModels = pgTable("cad_models", {
   unclassifiedCount: integer("unclassified_count").notNull().default(0),
   ignoredAnnotationCount: integer("ignored_annotation_count").notNull().default(0), // dimension/hatch/text entities that aren't building geometry
 
+  // "If some drawing has two or three drawings, it should ask me which
+  // drawing" — a real report: a sheet can carry more than one titled
+  // plan-kind view (e.g. GROUND FLOOR PLAN + FIRST FLOOR PLAN + TERRACE
+  // FLOOR PLAN on one DWG), and this app only ever models one of them (see
+  // partitionByViewTitles' doc in classify.ts). These three fields are what
+  // that automatic pick actually was and what the alternatives are, so the
+  // model page can show it as an explicit, switchable choice instead of
+  // only a passive note buried in the model's name. declaredType/
+  // preferredLevelKeyword are what the uploader said (or left as "auto")
+  // — kept so switching levels later (regenerateCadModelLevel in
+  // actions.ts) re-parses the source file with the same starting hints.
+  primaryLevelTitle: text("primary_level_title"), // the plan-kind title actually modeled, when the sheet had more than one (null: single-view sheet, or no eligible/preferred title to choose among several)
+  otherLevelTitles: jsonb("other_level_titles").$type<string[]>().notNull().default([]), // the OTHER plan-kind titles found but not modeled
+  otherLevelEntityCount: integer("other_level_entity_count").notNull().default(0),
+  declaredType: text("declared_type", { enum: ["auto", "plan", "elevation"] }).notNull().default("auto"),
+  preferredLevelKeyword: text("preferred_level_keyword"),
+
   approvedBy: text("approved_by").references(() => users.id),
   approvedAt: timestamp("approved_at"),
   createdBy: text("created_by")

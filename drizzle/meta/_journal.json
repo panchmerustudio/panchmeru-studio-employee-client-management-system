@@ -71,6 +71,13 @@
       "when": 1788193147710,
       "tag": "0009_youthful_doorman",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788269713896,
+      "tag": "0010_fat_rogue",
+      "breakpoints": true
     }
   ]
 }

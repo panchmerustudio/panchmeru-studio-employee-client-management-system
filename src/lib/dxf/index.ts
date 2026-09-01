@@ -7,7 +7,7 @@ export function parseDxfFile(
   dxfText: string,
   units: CadUnits,
   drawingHints?: { declaredType?: DeclaredDrawingType; preferredLevelKeyword?: string }
-): { result: ClassificationResult; unitsResolution: UnitsResolution; elevationViews: ElevationView[]; otherLevelTitles: string[]; otherLevelEntityCount: number } {
+): { result: ClassificationResult; unitsResolution: UnitsResolution; elevationViews: ElevationView[]; otherLevelTitles: string[]; otherLevelEntityCount: number; primaryPlanTitle: string | null } {
   const parser = new DxfParser();
   const dxf = parser.parseSync(dxfText);
   if (!dxf) throw new Error("Couldn't read this file as DXF — make sure it was saved/exported as DXF (not DWG) from AutoCAD.");
@@ -18,7 +18,7 @@ export function parseDxfFile(
   // same sheet, BEFORE plan classification runs — see extractViews' doc in
   // classify.ts. drawingHints carries what a person explicitly said about
   // the file (see uploadCadModel's "drawing type"/"floor level" fields).
-  const { elevationViews, excludeHandles, otherLevelTitles, otherLevelEntityCount } = extractViews(dxf, scale, drawingHints);
+  const { elevationViews, excludeHandles, otherLevelTitles, otherLevelEntityCount, primaryPlanTitle } = extractViews(dxf, scale, drawingHints);
   const result = classifyDxf(dxf, scale, { excludeHandles });
 
   // "recognize the type of drawing and work accordingly" — a plan-view
@@ -30,7 +30,7 @@ export function parseDxfFile(
   // this rejection outright — see parseDwgBuffer's matching comment.
   const nonPlanReason = drawingHints?.declaredType === "plan" ? null : detectNonPlanDrawing(dxf, result);
   if (nonPlanReason && elevationViews.length === 0) throw new Error(nonPlanReason);
-  return { result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount };
+  return { result, unitsResolution, elevationViews, otherLevelTitles, otherLevelEntityCount, primaryPlanTitle };
 }
 
 /** Light heuristic check before we even hand the buffer to the real parser — DXF is ASCII/text, starting with a "0" / "SECTION" group-code pair. Gives a clear error fast instead of a confusing parser exception for e.g. an accidentally-uploaded DWG. */

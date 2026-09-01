@@ -1301,7 +1301,7 @@ export function extractViews(
   dxf: IDxf,
   scale: number,
   opts?: { declaredType?: DeclaredDrawingType; preferredLevelKeyword?: string }
-): { elevationViews: ElevationView[]; excludeHandles?: Set<string>; otherLevelTitles: string[]; otherLevelEntityCount: number } {
+): { elevationViews: ElevationView[]; excludeHandles?: Set<string>; otherLevelTitles: string[]; otherLevelEntityCount: number; primaryPlanTitle: string | null } {
   const partition = partitionByViewTitles(dxf, scale, { preferredLevelKeyword: opts?.preferredLevelKeyword });
   if (partition) {
     return {
@@ -1309,16 +1309,25 @@ export function extractViews(
       excludeHandles: partition.excludeHandles.size > 0 ? partition.excludeHandles : undefined,
       otherLevelTitles: partition.otherLevelTitles,
       otherLevelEntityCount: partition.otherLevelEntityCount,
+      // Which plan-kind title (if any) this sheet's OTHER titled plan-kind
+      // views were excluded in favor of — null when the sheet has fewer
+      // than 2 titled views at all, or when multiple plan titles exist but
+      // none was eligible/preferred so nothing was excluded (see
+      // partitionByViewTitles' own primaryIdx doc). Lets a caller show
+      // "currently modeled: X" and offer the OTHER titles as an explicit
+      // switch instead of only a passive "not modeled" note — see
+      // uploadCadModel/regenerateCadModelLevel in actions.ts.
+      primaryPlanTitle: partition.primaryPlanTitle,
     };
   }
   const elevationViews = extractElevationViews(dxf, scale);
   if (elevationViews.length > 0) {
     const excludeHandles = new Set(elevationViews.flatMap((v) => [...v.memberHandles]));
-    return { elevationViews, excludeHandles, otherLevelTitles: [], otherLevelEntityCount: 0 };
+    return { elevationViews, excludeHandles, otherLevelTitles: [], otherLevelEntityCount: 0, primaryPlanTitle: null };
   }
   if (opts?.declaredType === "elevation") {
     const whole = measureElevationCluster(dxf.entities ?? [], dxf.blocks ?? {}, scale);
-    if (whole) return { elevationViews: [whole], excludeHandles: new Set(whole.memberHandles), otherLevelTitles: [], otherLevelEntityCount: 0 };
+    if (whole) return { elevationViews: [whole], excludeHandles: new Set(whole.memberHandles), otherLevelTitles: [], otherLevelEntityCount: 0, primaryPlanTitle: null };
   }
-  return { elevationViews: [], excludeHandles: undefined, otherLevelTitles: [], otherLevelEntityCount: 0 };
+  return { elevationViews: [], excludeHandles: undefined, otherLevelTitles: [], otherLevelEntityCount: 0, primaryPlanTitle: null };
 }

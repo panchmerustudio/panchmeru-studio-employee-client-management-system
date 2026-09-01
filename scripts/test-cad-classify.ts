@@ -460,6 +460,10 @@ check(
 );
 
 const multiStoreyViews = extractViews(multiStoreyDxf, 1);
+check(
+  '"if some drawing has two or three drawings, it should ask me which drawing" — extractViews surfaces WHICH title was picked (primaryPlanTitle), not just which others got excluded, so a caller (uploadCadModel/the model page\'s level picker) can offer the alternatives as an explicit switchable choice',
+  multiStoreyViews.primaryPlanTitle === "GROUND FLOOR PLAN"
+);
 const multiStoreyResult = classifyDxf(multiStoreyDxf, 1, { excludeHandles: multiStoreyViews.excludeHandles });
 check("multi-storey sheet: only the GROUND floor's own 2 walls are modeled (first floor + elevation excluded)", multiStoreyResult.entityCounts.wall === 2);
 const multiStoreyGroundWalls = multiStoreyResult.entities.filter((e) => e.type === "wall");
@@ -575,6 +579,7 @@ check(
   has no view titles at all).
 */
 check("ordinary single-plan sheet (no view titles): partitionByViewTitles returns null, doesn't engage", partitionByViewTitles(dxf, 1) === null);
+check("ordinary single-plan sheet: extractViews reports primaryPlanTitle null (nothing to pick among, so no picker should show)", extractViews(dxf, 1).primaryPlanTitle === null);
 
 /*
   Regression case for "it should learn about the moldings, the gates, the

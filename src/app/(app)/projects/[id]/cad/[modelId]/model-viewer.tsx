@@ -15,10 +15,40 @@ import {
   type CadEntityInput,
   type ValidationRow,
   type FloorRegion,
+  type FocusKind,
 } from "@/lib/cad3d/build-scene";
 import { approveCadModel } from "../actions";
 import { Icon } from "@/components/icon";
 import { SourceDrawing2D } from "./source-drawing-2d";
+
+/**
+ * The default/reset camera position for a freshly built model — factored
+ * out because it has to differ by what's actually being focused on, not
+ * just centered the same way. The plain "corner" framing (equal x/y/z
+ * offsets, all scaled by maxDim) looks down at a CONSTANT ~30deg angle
+ * regardless of the model's own proportions — both the vertical term and
+ * the horizontal terms scale by the same maxDim, so the ratio (and hence
+ * the angle) never changes. That's a natural angle for a plan's compact
+ * footprint (you're meant to look down onto it), but wrong for a wide,
+ * comparatively flat elevation panel (a real 38m x 11m front facade,
+ * say): looking down at ~30deg onto something that wide but that short
+ * flattens/foreshortens it until it reads as a floor plan of the facade
+ * instead of a front view — a real report against this exact case
+ * ("it has made it like a floor plan"). For an elevation focus this reuses
+ * the same front-on framing as the "front" preset in the Views menu below
+ * (eye-level lift + stand-back distance both scaled by maxDim, so the
+ * resulting ~10deg angle is likewise constant regardless of the facade's
+ * own width/height) as the DEFAULT, not just an option a person has to
+ * know to go tap for.
+ */
+function defaultCameraPosition(center: THREE.Vector3, maxDim: number, kind: FocusKind): THREE.Vector3 {
+  if (kind === "elevation") {
+    const eye = maxDim * 0.25;
+    const d = maxDim * 1.4;
+    return new THREE.Vector3(center.x, center.y + eye, center.z + d);
+  }
+  return new THREE.Vector3(center.x + maxDim * 0.9, center.y + maxDim * 0.75, center.z + maxDim * 0.9);
+}
 
 /**
  * Renders the generated 3D model (Three.js, real WebGL — not a mockup),
@@ -50,7 +80,7 @@ export function ModelViewer({
   // The model's own auto-fit framing (center + a size scale), captured once
   // per build so the on-screen zoom/fit buttons below can move the camera
   // without re-walking the whole scene graph on every tap.
-  const fitRef = useRef<{ center: THREE.Vector3; maxDim: number } | null>(null);
+  const fitRef = useRef<{ center: THREE.Vector3; maxDim: number; kind: FocusKind } | null>(null);
   const [validation, setValidation] = useState<ValidationRow[]>([]);
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
@@ -76,7 +106,7 @@ export function ModelViewer({
     const container = containerRef.current;
     if (!container) return;
 
-    const { group, validation: v, focusBox, floorRegions } = buildScene(entities, { windowSillMm });
+    const { group, validation: v, focusBox, focusKind, floorRegions } = buildScene(entities, { windowSillMm });
     sceneGroupRef.current = group;
     floorRegionsRef.current = floorRegions;
     setValidation(v);
@@ -192,7 +222,7 @@ export function ModelViewer({
     const height = 420;
     const width = container.clientWidth || 640;
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, sceneMaxDim * 30);
-    camera.position.set(focusCenter.x + focusMaxDim * 0.9, focusCenter.y + focusMaxDim * 0.75, focusCenter.z + focusMaxDim * 0.9);
+    camera.position.copy(defaultCameraPosition(focusCenter, focusMaxDim, focusKind));
     camera.lookAt(focusCenter);
 
     const renderer = new THREE.WebGLRenderer({ antialias: !heavyScene });
@@ -219,7 +249,7 @@ export function ModelViewer({
 
     cameraRef.current = camera;
     controlsRef.current = controls;
-    fitRef.current = { center: focusCenter.clone(), maxDim: focusMaxDim };
+    fitRef.current = { center: focusCenter.clone(), maxDim: focusMaxDim, kind: focusKind };
 
     let raf = 0;
     const animate = () => {
@@ -337,8 +367,8 @@ export function ModelViewer({
     const controls = controlsRef.current;
     const fit = fitRef.current;
     if (!camera || !controls || !fit) return;
-    const { center, maxDim } = fit;
-    camera.position.set(center.x + maxDim * 0.9, center.y + maxDim * 0.75, center.z + maxDim * 0.9);
+    const { center, maxDim, kind } = fit;
+    camera.position.copy(defaultCameraPosition(center, maxDim, kind));
     controls.target.copy(center);
     controls.update();
   }
