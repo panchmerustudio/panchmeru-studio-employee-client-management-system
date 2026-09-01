@@ -630,7 +630,125 @@ function buildFloorSlab(walls: WallInput[]): THREE.Mesh | null {
   return mesh;
 }
 
-export function buildScene(entities: CadEntityInput[], opts: { windowSillMm: number }): { group: THREE.Group; validation: ValidationRow[] } {
+/**
+ * Groups walls into contiguous clusters by endpoint proximity (simple
+ * union-find — cheap even at a few hundred walls). Real-world DWGs
+ * frequently pack more than one disconnected floor plan/detail into a
+ * single drawing sheet (a typical-unit toilet layout, a kitchen detail, an
+ * unrelated schedule) that all land in the same "wall" layer — flattening
+ * everything into one bounding box means the camera has to back out far
+ * enough to fit ALL of them, which is exactly what makes a real room's
+ * walls and furniture shrink to illegible flat lines. Clustering lets the
+ * viewer pick just the one cluster that's actually worth looking at by
+ * default.
+ */
+function clusterWalls(walls: WallInput[]): WallInput[][] {
+  const CLUSTER_GAP_MM = 3000; // endpoints within 3m of each other are treated as the same contiguous group of rooms
+  const parent = walls.map((_, i) => i);
+  function find(x: number): number {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  }
+  function union(a: number, b: number) {
+    const ra = find(a),
+      rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+  function near(a: Pt, b: Pt) {
+    return Math.hypot(a.x - b.x, a.y - b.y) < CLUSTER_GAP_MM;
+  }
+  for (let i = 0; i < walls.length; i++) {
+    const { start: as, end: ae } = walls[i].geometry;
+    for (let j = i + 1; j < walls.length; j++) {
+      const { start: bs, end: be } = walls[j].geometry;
+      if (near(as, bs) || near(as, be) || near(ae, bs) || near(ae, be)) union(i, j);
+    }
+  }
+  const groups = new Map<number, WallInput[]>();
+  walls.forEach((w, i) => {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r)!.push(w);
+  });
+  return [...groups.values()];
+}
+
+/**
+ * Picks which cluster the camera should actually start looking at, and
+ * returns its world-space bounds. Furniture is what the person actually
+ * asked to check, so a cluster that has real furniture/fixtures near it
+ * outweighs a larger but empty one — a big bare corridor of partition
+ * walls with nothing in it isn't a more useful default view than a small
+ * furnished room. Falls back to the largest wall cluster when nothing has
+ * furniture nearby, and to the whole scene when there are no walls at all.
+ */
+function computeFocusBox(walls: WallInput[], pointEntities: CadEntityInput[]): THREE.Box3 | null {
+  if (walls.length === 0) return null;
+  const clusters = clusterWalls(walls);
+
+  // Two-tier pick, not a single blended score: a cluster with even one real
+  // furniture/fixture item is always preferred over one with none — a big
+  // bare corridor of partition walls isn't a more useful default view than
+  // a small furnished room, no matter how many more walls it has. Among
+  // clusters that DO have furniture, prefer the most furnished one, then
+  // the most COMPACT one as a tiebreaker (a smaller footprint reads as a
+  // legible close-up room instead of a diluted overview) — favoring wall
+  // count there would undo the whole point by picking a sprawling cluster
+  // just because one stray fixture happens to sit inside its bounds.
+  let best = clusters[0];
+  let bestFurniture = -1;
+  let bestSpan = Infinity;
+  for (const cluster of clusters) {
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const w of cluster) {
+      for (const p of [w.geometry.start, w.geometry.end]) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+    }
+    const marginMm = 1500;
+    let furnitureNearby = 0;
+    for (const e of pointEntities) {
+      const pos = (e.geometry as { position?: Pt }).position;
+      if (!pos) continue;
+      if (pos.x >= minX - marginMm && pos.x <= maxX + marginMm && pos.y >= minY - marginMm && pos.y <= maxY + marginMm) furnitureNearby++;
+    }
+    const span = Math.max(maxX - minX, maxY - minY);
+
+    const better =
+      bestFurniture === 0 && furnitureNearby === 0
+        ? cluster.length > best.length // neither has furniture yet — fall back to "most walls" among those
+        : furnitureNearby > bestFurniture || (furnitureNearby === bestFurniture && furnitureNearby > 0 && span < bestSpan);
+    if (better) {
+      best = cluster;
+      bestFurniture = furnitureNearby;
+      bestSpan = span;
+    }
+  }
+
+  const box = new THREE.Box3();
+  let maxHeight = 3000;
+  for (const w of best) {
+    box.expandByPoint(toThree(w.geometry.start.x, w.geometry.start.y, 0));
+    box.expandByPoint(toThree(w.geometry.end.x, w.geometry.end.y, 0));
+    maxHeight = Math.max(maxHeight, w.heightMm ?? 3000);
+  }
+  box.max.y = Math.max(box.max.y, maxHeight * MM);
+  return box;
+}
+
+export function buildScene(
+  entities: CadEntityInput[],
+  opts: { windowSillMm: number }
+): { group: THREE.Group; validation: ValidationRow[]; focusBox: THREE.Box3 | null } {
   const group = new THREE.Group();
   const validation: ValidationRow[] = [];
 
@@ -710,5 +828,8 @@ export function buildScene(entities: CadEntityInput[], opts: { windowSillMm: num
     }
   }
 
-  return { group, validation };
+  const pointEntities = entities.filter((e) => e.type === "furniture" || e.type === "column" || e.type === "door" || e.type === "window");
+  const focusBox = computeFocusBox(walls, pointEntities);
+
+  return { group, validation, focusBox };
 }

@@ -19,7 +19,7 @@ import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
 import { registerUploadedFile, readStoredFile, createPresignedDownload } from "@/lib/storage";
 import { convertDwgToDxf } from "@/lib/cloudconvert";
-import { parseDxfFile, looksLikeDxf, type CadUnits } from "@/lib/dxf";
+import { parseDxfFile, looksLikeDxf, type CadUnits, type UnitsResolution } from "@/lib/dxf";
 import type { ClassificationResult, ClassifiedEntity } from "@/lib/dxf/classify";
 
 // Note on function duration: DWG uploads wait on a third-party conversion
@@ -195,9 +195,9 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   }
 
   let result: ClassificationResult;
-  let parseError: string | null = null;
+  let unitsResolution: UnitsResolution;
   try {
-    result = parseDxfFile(text, units);
+    ({ result, unitsResolution } = parseDxfFile(text, units));
   } catch (err) {
     const [model] = await db
       .insert(cadModels)
@@ -208,14 +208,26 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
     return model;
   }
 
+  // The drawing's own $INSUNITS header beat the uploader's dropdown pick
+  // (see resolveUnits() in src/lib/dxf/index.ts) — most likely because the
+  // file is genuinely drawn in a different unit than what was selected.
+  // There's no schema field for a general "heads up" note on a model, so
+  // this makes the correction impossible to miss the only two places it
+  // could otherwise stay silent: the stored `units` (now the unit that was
+  // actually used to scale the building, so it's never wrong on screen)
+  // and the model's name, which is shown everywhere in the CAD list/detail
+  // UI without any template changes needed.
+  const unitsOverridden = unitsResolution.source === "file";
+  const displayName = unitsOverridden ? `${name} (units auto-corrected: ${unitsResolution.requested} → ${unitsResolution.effective})` : name;
+
   const missingSpecs = buildMissingInputs(result);
   const [model] = await db
     .insert(cadModels)
     .values({
       projectId,
-      name,
+      name: displayName,
       sourceFileId: savedFile.id,
-      units,
+      units: unitsResolution.effective,
       status: missingSpecs.length > 0 ? "needs_info" : "ready",
       entityCounts: result.entityCounts,
       unclassifiedCount: result.unclassifiedCount,
@@ -231,7 +243,13 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
     await db.insert(cadMissingInputs).values(missingSpecs.map((s) => ({ modelId: model.id, kind: s.kind, question: s.question })));
   }
 
-  await recordAudit({ actor, action: "cad.uploaded", entityType: "cad_model", entityId: model.id, newState: { entityCounts: result.entityCounts, unclassifiedCount: result.unclassifiedCount } });
+  await recordAudit({
+    actor,
+    action: "cad.uploaded",
+    entityType: "cad_model",
+    entityId: model.id,
+    newState: { entityCounts: result.entityCounts, unclassifiedCount: result.unclassifiedCount, unitsResolution },
+  });
   revalidatePath(`/projects/${projectId}/cad`);
   return model;
 }

@@ -49,7 +49,7 @@ export function ModelViewer({
     const container = containerRef.current;
     if (!container) return;
 
-    const { group, validation: v } = buildScene(entities, { windowSillMm });
+    const { group, validation: v, focusBox } = buildScene(entities, { windowSillMm });
     sceneGroupRef.current = group;
     setValidation(v);
 
@@ -78,33 +78,51 @@ export function ModelViewer({
     scene.add(new THREE.HemisphereLight(0xffffff, 0x3a3428, 0.55));
     scene.add(new THREE.AmbientLight(0xffffff, 0.2));
 
-    const box = new THREE.Box3().setFromObject(group);
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z, 3);
+    // sceneBox covers EVERY entity — used only for how far the camera is
+    // allowed to pull back and where the far clip plane sits, so nothing
+    // gets clipped if the person zooms/pans out to see other parts of the
+    // drawing. focusBox/focusCenter/focusMaxDim (the largest — or most
+    // furnished — contiguous cluster of walls, see computeFocusBox's doc)
+    // is what the camera actually starts framed on. A real DWG often packs
+    // more than one disconnected floor plan/detail onto one sheet; framing
+    // the initial view on the FULL bounding box of all of them at once is
+    // what made walls and furniture shrink to illegible flat lines even
+    // after zooming in a little — the camera had to back out for kilometers
+    // to fit everything, so a 3m-tall wall was sub-pixel from that far away.
+    const sceneBox = new THREE.Box3().setFromObject(group);
+    const sceneSize = sceneBox.getSize(new THREE.Vector3());
+    const sceneMaxDim = Math.max(sceneSize.x, sceneSize.y, sceneSize.z, 3);
+
+    const focusCenter = focusBox ? focusBox.getCenter(new THREE.Vector3()) : sceneBox.getCenter(new THREE.Vector3());
+    const focusSize = focusBox ? focusBox.getSize(new THREE.Vector3()) : sceneSize;
+    const focusMaxDim = Math.max(focusSize.x, focusSize.y, focusSize.z, 3);
 
     const dir = new THREE.DirectionalLight(0xfff3df, 2.2);
-    dir.position.set(center.x + maxDim * 0.6, center.y + maxDim * 1.2, center.z + maxDim * 0.5);
-    dir.target.position.copy(center);
+    dir.position.set(focusCenter.x + focusMaxDim * 0.6, focusCenter.y + focusMaxDim * 1.2, focusCenter.z + focusMaxDim * 0.5);
+    dir.target.position.copy(focusCenter);
     dir.castShadow = !veryHeavyScene;
     const shadowMapRes = heavyScene ? 1024 : 2048;
     dir.shadow.mapSize.set(shadowMapRes, shadowMapRes);
     dir.shadow.bias = -0.0005;
-    const shadowExtent = maxDim * 0.75;
+    // Sized to the focused cluster, not the whole scene — a shadow frustum
+    // stretched to cover a kilometer-wide scattered site would spread the
+    // same shadow-map pixels so thin the room actually on screen would get
+    // no visible shadow detail at all.
+    const shadowExtent = focusMaxDim * 0.75;
     dir.shadow.camera.left = -shadowExtent;
     dir.shadow.camera.right = shadowExtent;
     dir.shadow.camera.top = shadowExtent;
     dir.shadow.camera.bottom = -shadowExtent;
     dir.shadow.camera.near = 0.1;
-    dir.shadow.camera.far = maxDim * 4;
+    dir.shadow.camera.far = focusMaxDim * 4;
     scene.add(dir);
     scene.add(dir.target);
 
     const height = 420;
     const width = container.clientWidth || 640;
-    const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, maxDim * 30);
-    camera.position.set(center.x + maxDim * 0.9, center.y + maxDim * 0.75, center.z + maxDim * 0.9);
-    camera.lookAt(center);
+    const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, sceneMaxDim * 30);
+    camera.position.set(focusCenter.x + focusMaxDim * 0.9, focusCenter.y + focusMaxDim * 0.75, focusCenter.z + focusMaxDim * 0.9);
+    camera.lookAt(focusCenter);
 
     const renderer = new THREE.WebGLRenderer({ antialias: !heavyScene });
     renderer.setSize(width, height);
@@ -117,19 +135,20 @@ export function ModelViewer({
     container.replaceChildren(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.copy(center);
+    controls.target.copy(focusCenter);
     controls.enableDamping = true;
     // Without explicit bounds OrbitControls' default is 0..Infinity, so a
     // pinch/scroll that overshoots can dolly the camera inside the geometry
-    // (looks like "nothing is happening") or out to a speck. Scaling the
-    // bounds to this model's own size keeps zoom usable at any scale, from
-    // a small room to a large multi-wing site.
-    controls.minDistance = maxDim * 0.01;
-    controls.maxDistance = maxDim * 25;
+    // (looks like "nothing is happening"). minDistance tracks the focused
+    // cluster so close-up zoom stays usable even on a huge site; maxDistance
+    // tracks the WHOLE scene so there's still room to pull back and find
+    // other parts of a multi-cluster drawing.
+    controls.minDistance = focusMaxDim * 0.01;
+    controls.maxDistance = sceneMaxDim * 25;
 
     cameraRef.current = camera;
     controlsRef.current = controls;
-    fitRef.current = { center: center.clone(), maxDim };
+    fitRef.current = { center: focusCenter.clone(), maxDim: focusMaxDim };
 
     let raf = 0;
     const animate = () => {

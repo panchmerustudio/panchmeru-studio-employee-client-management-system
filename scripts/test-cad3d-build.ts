@@ -61,6 +61,31 @@ function countMeshes(obj: THREE.Object3D): number {
 check("wall with door split into 3 segments", w1SegCount === 3);
 check("door mesh exists", !!doorMesh);
 
+/*
+  Regression case for the "camera frames the whole scattered site instead
+  of an actual room" bug: a real DWG often has more than one disconnected
+  wall cluster on one sheet (e.g. a bare corridor here vs. a small
+  furnished room far away). The initial focusBox must land on the
+  furnished cluster, not the far larger but empty one — that's the
+  difference between the camera opening on a legible close-up room and
+  opening on kilometers of flat, illegible line work.
+*/
+const bigEmptyCluster: CadEntityInput[] = [
+  { id: "bw1", type: "wall", layerName: "A-WALL", geometry: { start: { x: 0, y: 0 }, end: { x: 40000, y: 0 } }, depthMm: 230, heightMm: wallHeight },
+  { id: "bw2", type: "wall", layerName: "A-WALL", geometry: { start: { x: 40000, y: 0 }, end: { x: 40000, y: 5000 } }, depthMm: 230, heightMm: wallHeight },
+];
+const smallFurnishedCluster: CadEntityInput[] = [
+  { id: "sw1", type: "wall", layerName: "A-WALL", geometry: { start: { x: 500000, y: 500000 }, end: { x: 503000, y: 500000 } }, depthMm: 230, heightMm: wallHeight },
+  { id: "sw2", type: "wall", layerName: "A-WALL", geometry: { start: { x: 503000, y: 500000 }, end: { x: 503000, y: 503000 } }, depthMm: 230, heightMm: wallHeight },
+  { id: "sf1", type: "furniture", layerName: "A-FURN", label: "chair", geometry: { position: { x: 501500, y: 501500 } }, widthMm: 500, depthMm: 500, heightMm: 850, rotationDeg: 0 },
+];
+const { focusBox } = buildScene([...bigEmptyCluster, ...smallFurnishedCluster], { windowSillMm: 900 });
+const focusCenter = focusBox?.getCenter(new THREE.Vector3());
+check(
+  "focus box lands on the small FURNISHED cluster, not the larger empty one",
+  !!focusCenter && Math.abs(focusCenter.x - 501.5) < 5 && Math.abs(focusCenter.z - 501.5) < 5
+);
+
 function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);
   if (!ok) process.exitCode = 1;
