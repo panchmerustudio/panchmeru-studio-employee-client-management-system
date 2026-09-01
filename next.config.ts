@@ -1,6 +1,20 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // @mlightcad/libredwg-web (see src/lib/dxf/dwg.ts) is an Emscripten/WASM
+  // module that locates its .wasm binary at runtime via `import.meta.url`
+  // + a real filesystem read (fs.readFileSync), the same way it would in
+  // any plain Node process. Left to Next's webpack bundler, that .wasm
+  // import gets treated as a *client* static asset instead: it's emitted
+  // to .next/static/media/libredwg-web.<hash>.wasm (a public URL path,
+  // meant for the browser to fetch) and the server code ends up trying to
+  // fs.readFileSync() that same "/_next/static/..." URL string as if it
+  // were a real path on disk — which it isn't in the deployed Function,
+  // so every DWG upload fails with an ENOENT for that path. Listing the
+  // package here excludes it from webpack bundling for server code
+  // entirely; Node's own require()/import() resolves it directly from
+  // node_modules at runtime instead, where the .wasm file actually is.
+  serverExternalPackages: ["@mlightcad/libredwg-web"],
   experimental: {
     serverActions: {
       // Next.js defaults Server Action request bodies to 1MB, which is why
