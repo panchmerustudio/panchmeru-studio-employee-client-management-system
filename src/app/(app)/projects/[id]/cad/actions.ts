@@ -215,7 +215,7 @@ function elevationViewToRow(modelId: string, view: ElevationView) {
     modelId,
     type: "elevation_panel" as const,
     layerName: "0",
-    geometry: { widthMm: view.widthMm, heightMm: view.heightMm, openings: view.openings },
+    geometry: { widthMm: view.widthMm, heightMm: view.heightMm, openings: view.openings, strokes: view.strokes },
     widthMm: view.widthMm,
     depthMm: view.heightMm, // this row has no plan position, so widthMm/depthMm double as the panel's own width/height rather than a footprint
     heightMm: null,

@@ -292,6 +292,14 @@ const pureElevationDxf = {
 const pureElevationViews = extractElevationViews(pureElevationDxf, 1);
 check("elevation-only sheet: extractElevationViews finds exactly one view", pureElevationViews.length === 1);
 check("elevation-only sheet: view size matches the drawn rectangle (8000x3000mm)", pureElevationViews[0]?.widthMm === 8000 && pureElevationViews[0]?.heightMm === 3000);
+check(
+  "elevation-only sheet: all 4 rectangle edges came through as strokes (traced verbatim, not discarded once the bbox was measured)",
+  pureElevationViews[0]?.strokes.length === 4
+);
+check(
+  "elevation-only sheet: a traced stroke's coordinates are local to the panel's own bottom-left corner (e.g. the x=[0,8000] bottom edge reads as (0,0)-(8000,0))",
+  !!pureElevationViews[0]?.strokes.some((s) => s.x1 === 0 && s.y1 === 0 && s.x2 === 8000 && s.y2 === 0)
+);
 
 const pureElevationExclude = pureElevationViews.length > 0 ? new Set(pureElevationViews.flatMap((v) => [...v.memberHandles])) : undefined;
 const pureElevationResult = classifyDxf(pureElevationDxf, 1, { excludeHandles: pureElevationExclude });
@@ -349,6 +357,10 @@ check(
 check(
   "combined sheet: elevation view captured 1 door opening from its own DOOR_900 insert",
   combinedElevationViews[0]?.openings.length === 1 && combinedElevationViews[0]?.openings[0]?.kind === "door"
+);
+check(
+  "combined sheet: the elevation's 4 real line strokes (2 wall-layer + 2 roof-layer) all came through — the same real linework that used to be thrown away once the bbox was measured",
+  combinedElevationViews[0]?.strokes.length === 4
 );
 
 const combinedResultWithoutExclusion = classifyDxf(combinedPlanElevationDxf, 1);
@@ -563,6 +575,54 @@ check(
   has no view titles at all).
 */
 check("ordinary single-plan sheet (no view titles): partitionByViewTitles returns null, doesn't engage", partitionByViewTitles(dxf, 1) === null);
+
+/*
+  Regression case for "it should learn about the moldings, the gates, the
+  balcony, the designs, the carvings" — a real reference file's elevation
+  draws ALL of its facade detail (arches, rails, ornament) as bare ARC/LINE
+  geometry on one generic "wall" layer, never as a named door/window block
+  — so `openings` stays empty no matter what. `strokes` is what actually
+  recovers that detail: every real ARC/LINE in the cluster, traced as its
+  own exact coordinates, minus dimension-annotation entities (tick marks,
+  extension lines) which are measurement notation, not drawn facade art.
+*/
+const decoratedElevationDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    // A gate-like arched opening, drawn as a bare arc + two jamb lines —
+    // exactly the "untagged line/arc" pattern the real reference file uses,
+    // with nothing that would let openings-extraction recognize it as a door.
+    { type: "ARC", layer: "wall", handle: 900, center: { x: 4000, y: 1000 }, radius: 1000, startAngle: 0, endAngle: Math.PI },
+    { type: "LINE", layer: "wall", handle: 901, vertices: [{ x: 3000, y: 0 }, { x: 3000, y: 1000 }] },
+    { type: "LINE", layer: "wall", handle: 902, vertices: [{ x: 5000, y: 0 }, { x: 5000, y: 1000 }] },
+    // A dimension line's tick-mark arcs on a "dim1" layer, right next to the
+    // gate — real annotation, not drawn building detail, must be excluded.
+    { type: "ARC", layer: "dim1", handle: 903, center: { x: 3000, y: 2500 }, radius: 15, startAngle: 0, endAngle: Math.PI / 2 },
+    { type: "LINE", layer: "dim1", handle: 904, vertices: [{ x: 2000, y: 2500 }, { x: 6000, y: 2500 }] },
+    // The rest of the rectangle (its bottom edge split around the gate, so
+    // each half's own endpoint physically touches a jamb line's foot —
+    // same "real geometry actually connects" requirement documented on
+    // levelWalls above, not just sitting in the same rough neighborhood),
+    // so this reads as one real elevation-sized cluster.
+    { type: "LINE", layer: "wall", handle: 905, vertices: [{ x: 0, y: 0 }, { x: 3000, y: 0 }] },
+    { type: "LINE", layer: "wall", handle: 9051, vertices: [{ x: 5000, y: 0 }, { x: 9000, y: 0 }] },
+    { type: "LINE", layer: "wall", handle: 906, vertices: [{ x: 9000, y: 0 }, { x: 9000, y: 4000 }] },
+    { type: "LINE", layer: "wall", handle: 907, vertices: [{ x: 9000, y: 4000 }, { x: 0, y: 4000 }] },
+    { type: "LINE", layer: "wall", handle: 908, vertices: [{ x: 0, y: 4000 }, { x: 0, y: 0 }] },
+    { type: "MTEXT", layer: "TEXT", handle: 909, text: "FRONT ELEVATION", position: { x: 200, y: 200 } },
+  ],
+} as unknown as IDxf;
+const decoratedElevationViews = extractElevationViews(decoratedElevationDxf, 1);
+check("decorated elevation: exactly one view extracted", decoratedElevationViews.length === 1);
+check(
+  "decorated elevation: an untagged arch/gate drawn as bare ARC+LINE geometry still comes through as real strokes (multiple tessellated segments from the arc, plus the 2 jamb lines)",
+  (decoratedElevationViews[0]?.strokes.length ?? 0) >= 6
+);
+check(
+  "decorated elevation: the dimension tick-mark arc and its extension line (\"dim1\" layer, at local y=2500) are excluded from the trace — they're measurement notation, not drawn facade detail",
+  !!decoratedElevationViews[0] && decoratedElevationViews[0].strokes.every((s) => s.y1 !== 2500 && s.y2 !== 2500)
+);
 
 function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);

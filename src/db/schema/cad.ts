@@ -56,10 +56,15 @@ export const cadModels = pgTable("cad_models", {
  *   door/window/column/furniture: { position: {x,y} }
  *   room/stair:             { points: [{x,y}, ...] }
  *   unclassified:            { points: [{x,y}, ...], entityType: "LINE" | ... }
- *   elevation_panel:         { widthMm, heightMm, openings: [{xMm, zMm, widthMm, heightMm, kind: "door"|"window"}, ...] } —
+ *   elevation_panel:         { widthMm, heightMm, openings: [{xMm, zMm, widthMm, heightMm, kind: "door"|"window"}, ...],
+ *                              strokes: [{x1, y1, x2, y2}, ...] } —
  *                            a flat facade panel built from an elevation view (see extractElevationViews in
- *                            src/lib/dxf/classify.ts); xMm/zMm are local to the panel's own bottom-left corner,
- *                            NOT plan (x,y) — z here is real-world height, not the plan's second horizontal axis.
+ *                            src/lib/dxf/classify.ts); xMm/zMm/x1,y1,x2,y2 are all local to the panel's own bottom-left
+ *                            corner, NOT plan (x,y) — the panel's local y is real-world height, not the plan's
+ *                            second horizontal axis. `strokes` is every real line/arc/polyline segment the
+ *                            source file actually drew inside the elevation (minus dimension annotation) —
+ *                            rendered verbatim on the panel's face so door/window/gate/balcony/molding shapes
+ *                            the file never tagged as a block still show up, without interpreting what they are.
  */
 export const cadEntities = pgTable("cad_entities", {
   id: idColumn(),

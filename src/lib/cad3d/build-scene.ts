@@ -846,12 +846,17 @@ const ELEVATION_PANEL_THICKNESS_MM = 200;
 // How far in front of the building's own footprint the panel sits when a
 // floor plan also exists, so it doesn't visually clip into real walls.
 const ELEVATION_PANEL_STANDOFF_MM = 600;
+// How far the traced line-art sits proud of the panel's own front face —
+// just enough to avoid z-fighting with the slab underneath, not a real
+// measured relief depth.
+const ELEVATION_STROKE_RELIEF_MM = 3;
 
 /**
  * A flat, upright facade panel built from an elevation view's own measured
- * width/height and (when the source file tagged them) door/window cutouts
- * — see extractElevationViews' doc in classify.ts for what this
- * deliberately does NOT attempt (tracing a real roofline/silhouette).
+ * width/height, door/window cutouts where the source file tagged them, and
+ * every other real line/arc stroke it drew (see extractElevationStrokes'
+ * doc in classify.ts for what this traces vs. what it deliberately does
+ * NOT attempt — interpreting any of it, or reconstructing a roofline).
  *
  * Unlike buildFlatPolygon (a floor-plan shape rotated flat onto the
  * ground), this shape is drawn directly in Three's XY plane and left
@@ -868,7 +873,12 @@ const ELEVATION_PANEL_STANDOFF_MM = 600;
  * not a measured one; with no floor plan it just stands at the origin.
  */
 function buildElevationPanel(e: CadEntityInput, placement: { centerX: number; frontY: number }): THREE.Group | null {
-  const geo = e.geometry as { widthMm?: number; heightMm?: number; openings?: { xMm: number; zMm: number; widthMm: number; heightMm: number; kind: string }[] };
+  const geo = e.geometry as {
+    widthMm?: number;
+    heightMm?: number;
+    openings?: { xMm: number; zMm: number; widthMm: number; heightMm: number; kind: string }[];
+    strokes?: { x1: number; y1: number; x2: number; y2: number }[];
+  };
   const widthMm = geo.widthMm ?? e.widthMm ?? 0;
   const heightMm = geo.heightMm ?? e.depthMm ?? 0;
   if (widthMm < 1 || heightMm < 1) return null;
@@ -903,6 +913,34 @@ function buildElevationPanel(e: CadEntityInput, placement: { centerX: number; fr
 
   const group = new THREE.Group();
   group.add(mesh);
+
+  // Every real line/arc stroke the source file actually drew on this
+  // elevation (see extractElevationStrokes' doc in classify.ts) — a door
+  // arch, a gate's bars, a balcony rail, a molding line, whatever it is —
+  // traced verbatim onto the panel's outward-facing side, slightly proud
+  // of the surface so it doesn't z-fight with the slab underneath. This is
+  // the file's own real 2D linework, not a guess at what it depicts: a
+  // blank rectangle (the old result whenever the file never tagged its
+  // openings as named blocks) now shows the actual drawn detail instead.
+  const strokes = geo.strokes ?? [];
+  if (strokes.length > 0) {
+    const positions = new Float32Array(strokes.length * 6);
+    let i = 0;
+    for (const s of strokes) {
+      positions[i++] = s.x1 * MM;
+      positions[i++] = s.y1 * MM;
+      positions[i++] = ELEVATION_PANEL_THICKNESS_MM * MM + ELEVATION_STROKE_RELIEF_MM * MM;
+      positions[i++] = s.x2 * MM;
+      positions[i++] = s.y2 * MM;
+      positions[i++] = ELEVATION_PANEL_THICKNESS_MM * MM + ELEVATION_STROKE_RELIEF_MM * MM;
+    }
+    const strokeGeometry = new THREE.BufferGeometry();
+    strokeGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const strokeLines = new THREE.LineSegments(strokeGeometry, new THREE.LineBasicMaterial({ color: 0x3a3226 }));
+    strokeLines.userData = { cadEntityId: e.id, cadType: "elevation_panel", note: "traced from the source drawing's own line/arc geometry" };
+    group.add(strokeLines);
+  }
+
   group.position.set((placement.centerX - widthMm / 2) * MM, 0, placement.frontY * MM);
   return group;
 }
@@ -1630,6 +1668,7 @@ export function buildScene(
   // exists; standing at the origin for an elevation-only model, since
   // ELEVATION-only models have no walls at all here).
   const elevationPanels = entities.filter((e) => e.type === "elevation_panel");
+  let elevationBox: THREE.Box3 | null = null;
   if (elevationPanels.length > 0) {
     const footprintPts = walls.flatMap((w) => [w.geometry.start, w.geometry.end]);
     const footprint = bbox(footprintPts);
@@ -1641,12 +1680,26 @@ export function buildScene(
       // side along X so they're all visible rather than overlapping.
       const spread = i * 3000; // 3m gap between stacked panels, arbitrary but keeps them from touching
       const panel = buildElevationPanel(e, { centerX: centerX + spread, frontY });
-      if (panel) group.add(panel);
+      if (!panel) return;
+      group.add(panel);
+      // setFromObject's own expandByObject only updates the passed object's
+      // world matrix (not its full parent chain) — panel is the top-level
+      // object being measured here (its own position was already set inside
+      // buildElevationPanel) so this reads correctly without a wider update.
+      panel.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(panel);
+      elevationBox = elevationBox ? elevationBox.union(box) : box;
     });
   }
 
   const pointEntities = entities.filter((e) => e.type === "furniture" || e.type === "column" || e.type === "door" || e.type === "window");
-  const focusBox = computeFocusBox(walls, pointEntities);
+  // An elevation panel is what a person uploading one of these actually
+  // came to review — see the "It is taking it as a floor plan" bug report
+  // this was built for — so when one exists it's what the camera starts
+  // framed on and what "Views"/Reset re-center on, taking priority over
+  // computeFocusBox's plan-cluster pick (the floor plan, if this model also
+  // has one, is still fully reachable by orbiting/zooming out).
+  const focusBox = elevationBox ?? computeFocusBox(walls, pointEntities);
 
   return { group, validation, focusBox, floorRegions };
 }

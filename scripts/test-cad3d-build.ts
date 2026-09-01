@@ -185,6 +185,14 @@ const elevationOnlyEntity: CadEntityInput = {
       { xMm: 1000, zMm: 900, widthMm: 1200, heightMm: 1500, kind: "window" },
       { xMm: 3500, zMm: 0, widthMm: 900, heightMm: 2100, kind: "door" },
     ],
+    // A stand-in for real, never-tagged-as-a-block facade detail (a gate
+    // arch, a balcony rail, a molding line) — see extractElevationStrokes'
+    // doc in classify.ts. buildElevationPanel must trace these onto the
+    // panel's own face rather than silently dropping them.
+    strokes: [
+      { x1: 0, y1: 0, x2: 8000, y2: 0 },
+      { x1: 4000, y1: 0, x2: 4000, y2: 1500 },
+    ],
   },
   widthMm: 8000,
   depthMm: 3200,
@@ -214,13 +222,25 @@ check("elevation panel mesh is tagged cadType elevation_panel", elevOnlyMesh?.us
 const elevOnlyBox = elevOnlyMesh ? new THREE.Box3().setFromObject(elevOnlyMesh) : null;
 check("elevation-only panel stands with its bottom edge at ground level (y≈0)", !!elevOnlyBox && Math.abs(elevOnlyBox.min.y) < 1);
 
+const elevOnlyStrokes = findMesh(elevOnlyGroup, (m) => m instanceof THREE.LineSegments && m.userData?.cadEntityId === "elev1");
+check("elevation-only panel: the source drawing's real strokes were traced onto the panel as a LineSegments overlay, not dropped", !!elevOnlyStrokes);
+if (elevOnlyStrokes instanceof THREE.LineSegments) {
+  const posAttr = elevOnlyStrokes.geometry.getAttribute("position");
+  check("traced strokes: vertex buffer has 2 vertices per input stroke (2 strokes in the fixture -> 4 vertices)", posAttr.count === 4);
+  const strokeBox = new THREE.Box3().setFromObject(elevOnlyStrokes);
+  check(
+    "traced strokes: sit just proud of the panel's own front face (past its 200mm thickness), not buried inside/behind it",
+    strokeBox.min.z * 1000 > 200 && strokeBox.min.z * 1000 < 210
+  );
+}
+
 // Case B: elevation view combined with a real floor plan — the panel must
 // be offset in front of the building footprint (not overlapping the real
 // walls) per buildElevationPanel's placement doc, and the wall geometry
 // itself must be completely unaffected by the elevation entity being
 // present (they share no coordinate frame).
 const combinedEntities: CadEntityInput[] = [...outerRingWalls, elevationOnlyEntity];
-const { group: combinedGroup } = buildScene(combinedEntities, { windowSillMm: 900 });
+const { group: combinedGroup, focusBox: combinedFocusBox } = buildScene(combinedEntities, { windowSillMm: 900 });
 combinedGroup.updateMatrixWorld(true);
 const combinedPanelMesh = findMesh(combinedGroup, (m) => m.userData?.cadEntityId === "elev1");
 check("elevation panel still builds when a floor plan is also present", !!combinedPanelMesh);
@@ -233,6 +253,29 @@ if (combinedPanelMesh) {
 }
 const w1MeshInCombined = findMesh(combinedGroup, (m) => m.userData?.cadEntityId === "tr-w1");
 check("floor-plan wall geometry is unaffected by the elevation entity sharing the scene", !!w1MeshInCombined);
+
+/*
+  Regression case for "It is taking it as a floor plan" — a real report
+  screenshot showed the model viewer's default camera framed on the floor
+  plan with the elevation panel barely visible edge-on at the frame's edge.
+  Root cause: computeFocusBox only ever looked at wall clusters, so a model
+  with BOTH a floor plan and an elevation panel always framed on the plan.
+  buildScene must now prefer the elevation panel's own bounds for its
+  returned focusBox whenever one exists — that's what the model viewer's
+  initial camera position AND its "Views" preset menu are both computed
+  from (see model-viewer.tsx's setView/fitRef).
+*/
+check("model with both a floor plan and an elevation panel: focusBox comes back non-null", !!combinedFocusBox);
+if (combinedFocusBox) {
+  const size = combinedFocusBox.getSize(new THREE.Vector3());
+  // The elevation panel (8000mm wide) is bigger than the wall footprint's
+  // largest span (the outer ring is 6000x4000mm) — a focusBox still keyed
+  // off the wall cluster would report a max span of ~6m, not ~8m.
+  check(
+    `focusBox is keyed off the elevation panel (~8m wide), not the smaller wall footprint (~6m) — got ${size.x.toFixed(2)}m`,
+    Math.abs(size.x - 8) < 0.5
+  );
+}
 
 function findMesh(obj: THREE.Object3D, pred: (m: THREE.Object3D) => boolean): THREE.Object3D | null {
   if (pred(obj)) return obj;

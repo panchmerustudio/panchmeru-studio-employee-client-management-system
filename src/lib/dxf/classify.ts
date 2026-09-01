@@ -733,19 +733,111 @@ export function detectNonPlanDrawing(dxf: IDxf, result: ClassificationResult): s
   labels — where a much looser "how far from the title text" radius had
   wrongly swept nearly the whole drawing into one blob.
 
-  What this deliberately does NOT attempt: tracing the elevation's real
-  roofline/silhouette shape from its raw line/arc soup (unreliable and
-  drafting-style-dependent — see the module-level "never invented, only
-  measured" principle) or reconstructing multi-storey floor divisions.
-  The panel this produces is the elevation's own measured bounding
-  rectangle (a real, honest measurement) with door/window cutouts ONLY
-  where the source file tags them with a recognizable door/window
-  block/layer name — a file that draws elevation openings as bare,
-  untagged line rectangles (as the same reference file does) yields a
-  plain rectangular panel rather than a guessed cutout.
+  What this deliberately does NOT attempt: INTERPRETING the elevation's
+  raw line/arc soup — deciding which strokes form a roofline vs. a gate
+  vs. a cornice vs. a stone-course texture, or reconstructing multi-storey
+  floor divisions (unreliable and drafting-style-dependent — see the
+  module-level "never invented, only measured" principle). The panel's
+  SHAPE is the elevation's own measured bounding rectangle, and its door/
+  window CUTOUTS come only where the source file tags them with a
+  recognizable door/window block/layer name — a file that draws elevation
+  openings as bare, untagged line rectangles (as the same reference file
+  does) gets no guessed cutout there.
+  What this DOES do (see extractElevationStrokes below): every real line/
+  arc/polyline stroke the architect actually drew inside the elevation's
+  own cluster — window/door arches, balcony rails, gate bars, moldings,
+  cornices, jaali/grille patterns, whatever it is — is carried through
+  verbatim as its own exact coordinates and rendered on the panel's face,
+  with no interpretation of what any of it depicts. A file that never
+  tags a door/window as a block (so `openings` stays empty) can still
+  show its actual drawn door/window/gate/balcony shapes this way, because
+  they were real ARC/LINE/LWPOLYLINE geometry in the file all along —
+  this pipeline just used to throw that geometry away once the bounding
+  box was measured. Dimension-annotation entities (tick marks, extension
+  lines — layer names matching ANNOTATION_LAYER_RE) are excluded from
+  this trace since they're measurement notation, not drawn facade detail.
 */
 export type ElevationOpening = { xMm: number; zMm: number; widthMm: number; heightMm: number; kind: "door" | "window" };
-export type ElevationView = { widthMm: number; heightMm: number; openings: ElevationOpening[]; memberHandles: Set<string> };
+export type ElevationStroke = { x1: number; y1: number; x2: number; y2: number };
+export type ElevationView = { widthMm: number; heightMm: number; openings: ElevationOpening[]; strokes: ElevationStroke[]; memberHandles: Set<string> };
+// Entities whose layer marks them as dimensioning/hatch annotation rather
+// than real drawn facade artwork — confirmed against the reference file's
+// own "dim1" layer, which is small-radius tick-mark arcs (~12-15 raw units,
+// a few hundred mm) at dimension line ends, not building geometry.
+const ANNOTATION_LAYER_RE = /dim|hatch/i;
+// ~10° per tessellated arc segment — fine enough that even the reference
+// file's smallest decorative curves (radius as low as ~1mm) still read as
+// curves rather than facets, cheap enough for a file with 1000+ arcs.
+const ARC_TESSELLATION_STEP_RAD = (10 * Math.PI) / 180;
+// Hard cap so one pathological file can't hand the browser an unbounded
+// line-segment buffer — the reference file's real elevation (1734 member
+// entities, ~1200 of them arcs) comes in well under this.
+const MAX_ELEVATION_STROKES = 20000;
+
+function tessellateArc(center: Pt, radius: number, startAngle: number, endAngle: number, closed: boolean): Pt[] {
+  let span = closed ? 2 * Math.PI : endAngle - startAngle;
+  if (!closed) {
+    while (span <= 0) span += 2 * Math.PI;
+    while (span > 2 * Math.PI) span -= 2 * Math.PI;
+  }
+  const segments = Math.min(64, Math.max(3, Math.ceil(span / ARC_TESSELLATION_STEP_RAD)));
+  const pts: Pt[] = [];
+  for (let i = 0; i <= segments; i++) {
+    const a = startAngle + (span * i) / segments;
+    pts.push({ x: center.x + radius * Math.cos(a), y: center.y + radius * Math.sin(a) });
+  }
+  return pts;
+}
+
+function pointsToSegmentPairs(pts: Pt[], closed: boolean): [Pt, Pt][] {
+  const segs: [Pt, Pt][] = [];
+  for (let i = 0; i < pts.length - 1; i++) segs.push([pts[i], pts[i + 1]]);
+  if (closed && pts.length > 2) segs.push([pts[pts.length - 1], pts[0]]);
+  return segs;
+}
+
+/**
+ * Every real LINE/LWPOLYLINE/POLYLINE/ARC/CIRCLE stroke in the cluster,
+ * reduced to straight segments in the panel's own local mm frame (same
+ * bottom-left-origin convention as ElevationOpening's xMm/zMm) — see this
+ * function's use in measureElevationCluster and the module doc above for
+ * why this is a faithful trace, not an interpretation. Polyline bulges
+ * (an arc segment embedded in a polyline) are intentionally NOT honored —
+ * that vertex pair is drawn as a straight line rather than skipped or
+ * guessed at, a small, honest simplification rather than a fabrication.
+ */
+function extractElevationStrokes(cluster: IEntity[], box: { minX: number; minY: number }, scale: number): ElevationStroke[] {
+  const strokes: ElevationStroke[] = [];
+  for (const e of cluster) {
+    if (strokes.length >= MAX_ELEVATION_STROKES) break;
+    if (ANNOTATION_LAYER_RE.test(e.layer ?? "")) continue;
+
+    let segs: [Pt, Pt][] = [];
+    if (e.type === "LINE") {
+      const v = (e as ILineEntity).vertices ?? [];
+      if (v.length >= 2) segs = [[v[0], v[1]]];
+    } else if (e.type === "LWPOLYLINE" || e.type === "POLYLINE") {
+      const v = (e as ILwpolylineEntity).vertices ?? (e as unknown as IPolylineEntity).vertices ?? [];
+      segs = pointsToSegmentPairs(v, isClosed(v));
+    } else if (e.type === "ARC") {
+      const a = e as IArcEntity;
+      if (a.center && typeof a.radius === "number") segs = pointsToSegmentPairs(tessellateArc(a.center, a.radius, a.startAngle ?? 0, a.endAngle ?? 2 * Math.PI, false), false);
+    } else if (e.type === "CIRCLE") {
+      const c = e as ICircleEntity;
+      if (c.center && typeof c.radius === "number") segs = pointsToSegmentPairs(tessellateArc(c.center, c.radius, 0, 2 * Math.PI, true), true);
+    } else {
+      continue;
+    }
+
+    for (const [p1, p2] of segs) {
+      const s1 = scalePt(p1, scale);
+      const s2 = scalePt(p2, scale);
+      strokes.push({ x1: Math.round(s1.x - box.minX), y1: Math.round(s1.y - box.minY), x2: Math.round(s2.x - box.minX), y2: Math.round(s2.y - box.minY) });
+      if (strokes.length >= MAX_ELEVATION_STROKES) break;
+    }
+  }
+  return strokes;
+}
 
 // Real-world millimeters. Two entities within this gap of each other count
 // as the same drawn view; found empirically (see module doc above) — loose
@@ -906,7 +998,9 @@ function measureElevationCluster(cluster: IEntity[], blocks: Record<string, IBlo
     });
   }
 
-  return { widthMm: Math.round(widthMm), heightMm: Math.round(heightMm), openings, memberHandles: new Set(cluster.map((e) => String(e.handle))) };
+  const strokes = extractElevationStrokes(cluster, box, scale);
+
+  return { widthMm: Math.round(widthMm), heightMm: Math.round(heightMm), openings, strokes, memberHandles: new Set(cluster.map((e) => String(e.handle))) };
 }
 
 export function extractElevationViews(dxf: IDxf, scale: number): ElevationView[] {
