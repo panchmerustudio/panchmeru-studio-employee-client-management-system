@@ -57,15 +57,13 @@ type Pt = { x: number; y: number };
   single flat color, which is the "PBR material" half of a realism upgrade
   that's actually achievable here: this app has no bundled/hosted photo
   textures or .glb assets to load, so anything textured is generated, not
-  fetched. Built once and cloned-with-repeat per wall so the tiling scales
-  with each wall's real length/height instead of stretching.
+  fetched. One material (one texture pair) is built lazily and shared by
+  every wall in the building — see getWallMaterial()'s doc for why that
+  sharing is load-bearing, not just an optimization.
   */
 function canUseCanvas() {
   return typeof document !== "undefined";
 }
-
-let cachedWallColorTex: THREE.Texture | null = null;
-let cachedWallBumpTex: THREE.Texture | null = null;
 
 function createCanvasTexture(size: number, draw: (ctx: CanvasRenderingContext2D, s: number) => void): THREE.Texture {
   const c = document.createElement("canvas");
@@ -106,26 +104,37 @@ function makeBumpTexture(size: number, intensity: number): THREE.Texture {
   });
 }
 
-function cloneTiled(tex: THREE.Texture, rx: number, ry: number): THREE.Texture {
-  const t = tex.clone();
-  t.needsUpdate = true;
-  t.wrapS = THREE.RepeatWrapping;
-  t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(Math.max(rx, 0.5), Math.max(ry, 0.5));
-  return t;
-}
+let cachedWallMaterial: THREE.MeshStandardMaterial | null = null;
+let cachedFlatWallMaterial: THREE.MeshStandardMaterial | null = null;
 
-function wallMaterial(color: number, lengthMm: number, heightMm: number): THREE.MeshStandardMaterial {
-  if (!canUseCanvas()) return new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.02 });
-  if (!cachedWallColorTex) cachedWallColorTex = makePlasterTexture(color);
-  if (!cachedWallBumpTex) cachedWallBumpTex = makeBumpTexture(128, 0.35);
-  return new THREE.MeshStandardMaterial({
-    map: cloneTiled(cachedWallColorTex, Math.max(lengthMm, 1) / 2500, Math.max(heightMm, 1) / 2500),
-    bumpMap: cloneTiled(cachedWallBumpTex, Math.max(lengthMm, 1) / 1000, Math.max(heightMm, 1) / 1000),
-    bumpScale: 0.012,
-    roughness: 0.85,
-    metalness: 0.02,
-  });
+/**
+ * One shared MeshStandardMaterial for every wall in the building — NOT one
+ * per wall. An earlier version cloned the color+bump texture (and created a
+ * brand-new Material) for every wall span so each wall's tiling could be
+ * scaled to its own length/height. That looks fine on the 2-3 wall test
+ * fixture, but a real floor plan can have hundreds of walls (646, in one
+ * reported case) — cloning meant hundreds of canvases being drawn and
+ * separately uploaded to the GPU on every model load, which is exactly what
+ * left the 3D pane stuck blank on larger drawings (multi-second main-thread
+ * work plus real GPU texture memory pressure on phones). One shared
+ * material costs one upload, full stop. The tradeoff is the plaster tiling
+ * is a fixed density rather than exactly proportional to each wall's own
+ * size — acceptable here because the texture is a faint, non-repeating-
+ * pattern noise (unlike, say, floor planks), so a little stretching on very
+ * short or very long walls isn't visually obvious.
+ */
+function getWallMaterial(color: number): THREE.MeshStandardMaterial {
+  if (!canUseCanvas()) {
+    if (!cachedFlatWallMaterial) cachedFlatWallMaterial = new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.02 });
+    return cachedFlatWallMaterial;
+  }
+  if (cachedWallMaterial) return cachedWallMaterial;
+  const colorTex = makePlasterTexture(color);
+  const bumpTex = makeBumpTexture(128, 0.35);
+  colorTex.repeat.set(3, 1.2);
+  bumpTex.repeat.set(6, 3);
+  cachedWallMaterial = new THREE.MeshStandardMaterial({ map: colorTex, bumpMap: bumpTex, bumpScale: 0.012, roughness: 0.85, metalness: 0.02 });
+  return cachedWallMaterial;
 }
 
 function box(lengthMm: number, thicknessMm: number, heightMm: number, color: number) {
@@ -217,7 +226,7 @@ function buildWall(wall: WallInput, openings: OpeningInput[], windowSillMm: numb
     const midT = (s.t1 + s.t2) / 2;
     const midZ = (s.z1 + s.z2) / 2;
     const geo = new THREE.BoxGeometry(Math.max(segLen, 1) * MM, Math.max(segHeight, 1) * MM, Math.max(thickness, 1) * MM);
-    const mesh = new THREE.Mesh(geo, wallMaterial(COLORS.wall, segLen, segHeight));
+    const mesh = new THREE.Mesh(geo, getWallMaterial(COLORS.wall));
     const center = toThree(start.x + ux * midT, start.y + uy * midT, midZ);
     mesh.position.copy(center);
     mesh.rotation.y = -angle;

@@ -284,6 +284,29 @@ export async function resolveMissingInput(modelId: string, inputId: string, valu
   revalidatePath(`/projects/${model.projectId}/cad/${modelId}`);
 }
 
+/**
+ * Deletes a CAD import outright — for a model that was uploaded against the
+ * wrong drawing, parsed into garbage, or is otherwise not worth keeping.
+ * cadEntities/cadMissingInputs cascade-delete with it (onDelete: "cascade"
+ * on both, see src/db/schema/cad.ts) — nothing is left orphaned. An
+ * approved model represents signed-off work, so deleting one needs
+ * CAD_APPROVE, not just CAD_CREATE; anything short of approved only needs
+ * the same permission that let someone upload it in the first place.
+ */
+export async function deleteCadModel(modelId: string) {
+  const actor = await requirePermission(PERMISSIONS.CAD_CREATE);
+  const model = await db.query.cadModels.findFirst({ where: eq(cadModels.id, modelId) });
+  if (!model) throw new Error("Model not found.");
+  if (model.status === "approved" && !actor.permissions.includes(PERMISSIONS.CAD_APPROVE)) {
+    throw new Error("This model has been approved — only someone who can approve models can delete it.");
+  }
+
+  await db.delete(cadModels).where(eq(cadModels.id, modelId));
+  await recordAudit({ actor, action: "cad.deleted", entityType: "cad_model", entityId: modelId, previousState: { name: model.name, status: model.status } });
+  revalidatePath(`/projects/${model.projectId}/cad`);
+  return { projectId: model.projectId };
+}
+
 export async function approveCadModel(modelId: string) {
   const actor = await requirePermission(PERMISSIONS.CAD_APPROVE);
   const model = await db.query.cadModels.findFirst({ where: eq(cadModels.id, modelId) });

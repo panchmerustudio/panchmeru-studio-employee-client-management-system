@@ -10,6 +10,7 @@ import { Icon } from "@/components/icon";
 import { formatDateTime } from "@/lib/format";
 import { MissingInfoForm } from "./missing-info-form";
 import { ModelViewerClient } from "./model-viewer-client";
+import { DeleteModelButton } from "./delete-model-button";
 
 const TYPE_LABELS: Record<string, string> = { wall: "Walls", door: "Doors", window: "Windows", column: "Columns", furniture: "Furniture", room: "Rooms", stair: "Stairs", unclassified: "Unclassified" };
 
@@ -41,6 +42,7 @@ export default async function CadModelPage({ params }: { params: Promise<{ id: s
             <Link href={`/projects/${id}/cad`} className="btn btn-secondary">
               <Icon name="arrow-left" className="h-4 w-4" /> Back
             </Link>
+            {(canCreate || canApprove) && <DeleteModelButton modelId={modelId} modelName={model.name} />}
           </div>
         }
       />
@@ -74,7 +76,7 @@ export default async function CadModelPage({ params }: { params: Promise<{ id: s
 
       {model.status === "needs_info" && (
         <SectionCard title="Missing information">
-          <MissingInfoForm modelId={modelId} inputs={pendingInputs.map((p) => ({ id: p.id, kind: p.kind, question: p.question }))} />
+          <MissingInfoForm modelId={modelId} inputs={pendingInputs.map((p) => ({ id: p.id, kind: p.kind, question: p.question }))} units={model.units} />
         </SectionCard>
       )}
 

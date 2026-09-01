@@ -3,6 +3,8 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { resolveMissingInput } from "../actions";
+import type { CadUnits } from "@/lib/dxf";
+import { formatMm, unitSuffix, unitValueToMm } from "@/lib/cad-units";
 
 const PRESETS: Record<string, number[]> = {
   floor_height: [2700, 3000, 3200, 3500],
@@ -14,20 +16,21 @@ const PRESETS: Record<string, number[]> = {
 
 type PendingInput = { id: string; kind: string; question: string };
 
-export function MissingInfoForm({ modelId, inputs }: { modelId: string; inputs: PendingInput[] }) {
+export function MissingInfoForm({ modelId, inputs, units }: { modelId: string; inputs: PendingInput[]; units: CadUnits }) {
   return (
     <div className="space-y-4">
       <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
         A plan-view CAD drawing doesn&apos;t contain this information — nothing here is guessed. Answer each question below to unlock 3D generation.
+        {units !== "mm" && ` Shown in ${unitSuffix(units)}, matching how this drawing was uploaded.`}
       </p>
       {inputs.map((input) => (
-        <MissingInputRow key={input.id} modelId={modelId} input={input} />
+        <MissingInputRow key={input.id} modelId={modelId} input={input} units={units} />
       ))}
     </div>
   );
 }
 
-function MissingInputRow({ modelId, input }: { modelId: string; input: PendingInput }) {
+function MissingInputRow({ modelId, input, units }: { modelId: string; input: PendingInput; units: CadUnits }) {
   const [customOpen, setCustomOpen] = useState(false);
   const [customValue, setCustomValue] = useState("");
   const [pending, startTransition] = useTransition();
@@ -54,7 +57,7 @@ function MissingInputRow({ modelId, input }: { modelId: string; input: PendingIn
       <div className="flex flex-wrap gap-2">
         {presets.map((p) => (
           <button key={p} disabled={pending} onClick={() => submit(p)} className="btn btn-secondary">
-            {p} mm
+            {formatMm(p, units)}
           </button>
         ))}
         {!customOpen ? (
@@ -65,16 +68,17 @@ function MissingInputRow({ modelId, input }: { modelId: string; input: PendingIn
           <div className="flex items-center gap-2">
             <input
               type="number"
-              min={1}
+              min={0.01}
+              step="any"
               className="input w-28"
-              placeholder="mm"
+              placeholder={unitSuffix(units)}
               value={customValue}
               onChange={(e) => setCustomValue(e.target.value)}
               autoFocus
             />
             <button
               disabled={pending || !customValue}
-              onClick={() => submit(Number(customValue))}
+              onClick={() => submit(Math.round(unitValueToMm(Number(customValue), units)))}
               className="btn btn-primary"
             >
               {pending ? "Saving…" : "Set"}

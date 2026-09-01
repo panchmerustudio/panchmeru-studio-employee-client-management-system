@@ -35,6 +35,12 @@ export function BoundaryCapture({ siteId }: { siteId: string }) {
     setPoints((p) => p.slice(0, -1));
   }
 
+  function clearAll() {
+    if (points.length > 0 && !window.confirm(`Discard all ${points.length} captured points and start over?`)) return;
+    setPoints([]);
+    setMessage(null);
+  }
+
   async function save() {
     if (points.length < 3) {
       setMessage({ tone: "error", text: "Walk at least 3 points around the boundary before saving." });
@@ -81,9 +87,10 @@ export function BoundaryCapture({ siteId }: { siteId: string }) {
               <li key={i}>#{i + 1} · {p.lat.toFixed(5)}, {p.lng.toFixed(5)} (±{Math.round(p.accuracy)}m)</li>
             ))}
           </ul>
-          {points.length > 0 && (
+          <div className="flex gap-3">
             <button onClick={removeLast} className="text-xs font-medium text-red-600">Remove last point</button>
-          )}
+            <button onClick={clearAll} className="text-xs font-medium text-red-600">Restart (clear all)</button>
+          </div>
         </div>
       )}
 

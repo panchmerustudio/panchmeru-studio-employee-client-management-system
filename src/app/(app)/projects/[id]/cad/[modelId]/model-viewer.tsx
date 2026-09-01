@@ -47,6 +47,19 @@ export function ModelViewer({
     sceneGroupRef.current = group;
     setValidation(v);
 
+    // Real floor plans can carry hundreds of walls (646, in one reported
+    // case) — shadow-mapped, textured rendering at full quality for every
+    // one of them is exactly what left this pane stuck blank on a phone
+    // GPU. Scale shadow resolution/pixel ratio down for a big model, and
+    // drop shadows entirely past a point, so a large drawing still renders
+    // — just flatter-looking — instead of hanging.
+    let meshCount = 0;
+    group.traverse((o) => {
+      if (o instanceof THREE.Mesh) meshCount++;
+    });
+    const heavyScene = meshCount > 400;
+    const veryHeavyScene = meshCount > 900;
+
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf3f1ea);
     scene.add(group);
@@ -67,8 +80,9 @@ export function ModelViewer({
     const dir = new THREE.DirectionalLight(0xfff3df, 2.2);
     dir.position.set(center.x + maxDim * 0.6, center.y + maxDim * 1.2, center.z + maxDim * 0.5);
     dir.target.position.copy(center);
-    dir.castShadow = true;
-    dir.shadow.mapSize.set(2048, 2048);
+    dir.castShadow = !veryHeavyScene;
+    const shadowMapRes = heavyScene ? 1024 : 2048;
+    dir.shadow.mapSize.set(shadowMapRes, shadowMapRes);
     dir.shadow.bias = -0.0005;
     const shadowExtent = maxDim * 0.75;
     dir.shadow.camera.left = -shadowExtent;
@@ -86,10 +100,10 @@ export function ModelViewer({
     camera.position.set(center.x + maxDim * 0.9, center.y + maxDim * 0.75, center.z + maxDim * 0.9);
     camera.lookAt(center);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: !heavyScene });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, heavyScene ? 1 : 2));
+    renderer.shadowMap.enabled = !veryHeavyScene;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -126,10 +140,15 @@ export function ModelViewer({
           obj.geometry.dispose();
           const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
           for (const mat of mats) {
-            // Wall materials now carry cloned canvas textures (map/bumpMap,
-            // one clone per wall span for correct tiling) — mat.dispose()
-            // alone doesn't free those, so without this every model view
-            // would leak a texture per wall span.
+            // The wall material's canvas textures (map/bumpMap) aren't
+            // freed by mat.dispose() alone. That material is shared by
+            // every wall in the building (see getWallMaterial() in
+            // build-scene.ts), so this runs many times against the same
+            // instance across a big model — harmless, dispose() is
+            // idempotent — and against the same module-level cache across
+            // different model views, which just means Three silently
+            // re-uploads it next time it's used rather than actually
+            // leaking anything.
             if (mat instanceof THREE.MeshStandardMaterial) {
               mat.map?.dispose();
               mat.bumpMap?.dispose();

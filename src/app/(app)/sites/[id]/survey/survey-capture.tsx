@@ -28,7 +28,7 @@ import {
   MIN_ACCEPTABLE_ACCURACY_METERS,
   computeBoundaryStats,
 } from "@/lib/geo";
-import { startSurvey, pauseSurvey, resumeSurvey, finishSurvey, submitSurveyForReview, redoSurveyDraft } from "./actions";
+import { startSurvey, pauseSurvey, resumeSurvey, finishSurvey, submitSurveyForReview, redoSurveyDraft, removeLastSurveyPoint } from "./actions";
 import { SurveyLiveMapClient } from "./survey-live-map-client";
 
 type CapturedPoint = { lat: number; lng: number; accuracy?: number; capturedAt: number; isOutlier: boolean; outlierReason?: string };
@@ -230,6 +230,66 @@ export function SurveyCapture({
     }
   }
 
+  /**
+   * If the last point hasn't been handed to the offline queue yet, this is
+   * a plain local pop — nothing to undo server-side. If it has, ask the
+   * server to remove it (see removeLastSurveyPoint's doc): it only deletes
+   * when the DB's actual last point matches what the client remembers, so
+   * a queued-but-not-yet-delivered point safely reports "not removed yet"
+   * instead of risking the wrong row.
+   */
+  async function handleUndoPoint() {
+    if (points.length === 0 || busy) return;
+    const last = points[points.length - 1];
+    const stillLocalOnly = points.length > syncedCountRef.current;
+    if (stillLocalOnly) {
+      const next = points.slice(0, -1);
+      setPoints(next);
+      pointsRef.current = next;
+      setMessage(null);
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await removeLastSurveyPoint(survey!.id, { lat: last.lat, lng: last.lng });
+      if (!result.removed) {
+        setMessage({ tone: "info", text: "That point is still syncing — wait a moment and try Undo again, or use Restart to discard the whole walk." });
+        return;
+      }
+      const next = points.slice(0, -1);
+      setPoints(next);
+      pointsRef.current = next;
+      syncedCountRef.current -= 1;
+      setMessage(null);
+    } catch (err) {
+      setMessage({ tone: "error", text: err instanceof Error ? err.message : "Couldn't undo the last point." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Discards everything captured so far and starts over — available mid-walk (capturing/paused), not just at the post-Finish review step. */
+  async function handleRestart() {
+    if (!survey) return;
+    if (!window.confirm(`Restart this survey? All ${points.length} captured point${points.length === 1 ? "" : "s"} will be discarded and you'll start a fresh walk.`)) return;
+    stopWatchRef.current?.();
+    stopWatchRef.current = null;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await redoSurveyDraft(survey.id);
+      setSurvey(null);
+      setPoints([]);
+      pointsRef.current = [];
+      syncedCountRef.current = 0;
+      setPhase("idle");
+    } catch (err) {
+      setMessage({ tone: "error", text: err instanceof Error ? err.message : "Couldn't restart." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleRedo() {
     if (!survey) return;
     setBusy(true);
@@ -347,6 +407,15 @@ export function SurveyCapture({
             </div>
           )}
           {message && <Message {...message} />}
+
+          <div className="grid grid-cols-2 gap-2">
+            <button className="btn btn-secondary" disabled={busy || points.length === 0} onClick={handleUndoPoint}>
+              Undo last point
+            </button>
+            <button className="btn btn-danger" disabled={busy} onClick={handleRestart}>
+              Restart
+            </button>
+          </div>
 
           <div className="grid grid-cols-2 gap-2">
             {phase === "capturing" ? (

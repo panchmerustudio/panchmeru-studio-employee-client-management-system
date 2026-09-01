@@ -177,7 +177,46 @@ export async function submitSurveyForReview(surveyId: string) {
   revalidatePath(`/sites/${survey.siteId}`);
 }
 
-/** Employee taps "Redo" during self-review — discards this draft (never deleted, just marked cancelled) so they can start a fresh walk. */
+/**
+ * Undo the single most recently captured point. The offline durability
+ * queue (lib/offline-queue.ts) can retry a point's POST well after the
+ * fact if the phone was offline when it was captured, so this server has
+ * no reliable way to know whether "the last point" the client remembers
+ * has actually landed in the DB yet, is still in flight, or is still
+ * sitting unsent in IndexedDB. Blindly deleting-by-sequence would risk
+ * deleting the wrong point, or having a still-in-flight POST silently
+ * re-insert the "undone" point moments later.
+ *
+ * So the client sends the exact point it wants undone (survey-capture.tsx's
+ * handleUndoPoint), and this only deletes the DB's actual last-sequence
+ * point if it matches — if the queued POST for that point hasn't landed
+ * yet, the DB's last point is something older and won't match, so nothing
+ * is deleted (`removed: false`) rather than guessing. A point that turns
+ * out not to be undoable this way isn't lost either: it's still
+ * auto-flagged if it looks like a GPS jump/low-accuracy fix, excluded from
+ * the boundary automatically, or fixable later via adjustSurveyBoundary.
+ */
+export async function removeLastSurveyPoint(surveyId: string, expected: { lat: number; lng: number }) {
+  const actor = await requireUser();
+  const survey = await db.query.plotSurveys.findFirst({ where: eq(plotSurveys.id, surveyId) });
+  if (!survey) throw new Error("Survey not found.");
+  requireCapturedBy(actor, survey);
+  if (survey.status !== "in_progress" || survey.endedAt) throw new Error("This survey isn't currently in progress.");
+
+  const last = await db.query.surveyPoints.findFirst({ where: eq(surveyPoints.surveyId, surveyId), orderBy: desc(surveyPoints.sequence) });
+  const matches = !!last && Math.abs(last.latitude - expected.lat) < 1e-7 && Math.abs(last.longitude - expected.lng) < 1e-7;
+  if (!matches) return { removed: false, pointCount: survey.pointCount, outlierCount: survey.outlierCount };
+
+  await db.delete(surveyPoints).where(eq(surveyPoints.id, last.id));
+  const remaining = await db.query.surveyPoints.findMany({ where: eq(surveyPoints.surveyId, surveyId) });
+  const pointCount = remaining.length;
+  const outlierCount = remaining.filter((p) => p.isOutlier).length;
+  await db.update(plotSurveys).set({ pointCount, outlierCount }).where(eq(plotSurveys.id, surveyId));
+  await recordAudit({ actor, action: "survey.point_undone", entityType: "plot_survey", entityId: surveyId });
+  return { removed: true, pointCount, outlierCount };
+}
+
+/** Discards the in-progress draft (never deleted, just marked cancelled) so the surveyor can start a fresh walk — used both mid-walk ("Restart") and during self-review ("Redo"). */
 export async function redoSurveyDraft(surveyId: string) {
   const actor = await requireUser();
   const survey = await db.query.plotSurveys.findFirst({ where: eq(plotSurveys.id, surveyId) });
