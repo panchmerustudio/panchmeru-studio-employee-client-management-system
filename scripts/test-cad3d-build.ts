@@ -222,16 +222,17 @@ check("elevation panel mesh is tagged cadType elevation_panel", elevOnlyMesh?.us
 const elevOnlyBox = elevOnlyMesh ? new THREE.Box3().setFromObject(elevOnlyMesh) : null;
 check("elevation-only panel stands with its bottom edge at ground level (y≈0)", !!elevOnlyBox && Math.abs(elevOnlyBox.min.y) < 1);
 
-const elevOnlyStrokes = findMesh(elevOnlyGroup, (m) => m instanceof THREE.LineSegments && m.userData?.cadEntityId === "elev1");
-check("elevation-only panel: the source drawing's real strokes were traced onto the panel as a LineSegments overlay, not dropped", !!elevOnlyStrokes);
-if (elevOnlyStrokes instanceof THREE.LineSegments) {
-  const posAttr = elevOnlyStrokes.geometry.getAttribute("position");
-  check("traced strokes: vertex buffer has 2 vertices per input stroke (2 strokes in the fixture -> 4 vertices)", posAttr.count === 4);
-  const strokeBox = new THREE.Box3().setFromObject(elevOnlyStrokes);
-  check(
-    "traced strokes: sit just proud of the panel's own front face (past its 200mm thickness), not buried inside/behind it",
-    strokeBox.min.z * 1000 > 200 && strokeBox.min.z * 1000 < 210
-  );
+const elevOnlyRelief = findMesh(
+  elevOnlyGroup,
+  (m) => m instanceof THREE.Mesh && m.userData?.cadEntityId === "elev1" && typeof m.userData?.note === "string" && m.userData.note.includes("traced")
+);
+check("elevation-only panel: the source drawing's real strokes were traced onto the panel as raised 3D relief bars, not dropped", !!elevOnlyRelief);
+if (elevOnlyRelief instanceof THREE.Mesh) {
+  const posAttr = elevOnlyRelief.geometry.getAttribute("position");
+  check("traced strokes: relief geometry has 18 vertices per input stroke (2 strokes in the fixture -> 36 vertices; top face + 2 side walls, 2 tris each)", posAttr.count === 36);
+  const strokeBox = new THREE.Box3().setFromObject(elevOnlyRelief);
+  check("traced strokes: relief base sits flush with the panel's own front face (200mm)", Math.abs(strokeBox.min.z * 1000 - 200) < 1);
+  check("traced strokes: relief stands proud by its stated (not measured) depth (200 + 15 = 215mm)", Math.abs(strokeBox.max.z * 1000 - 215) < 1);
 }
 
 // Case B: elevation view combined with a real floor plan — the panel must

@@ -156,6 +156,121 @@ function getWallMaterial(color: number): THREE.MeshStandardMaterial {
   return cachedWallMaterial;
 }
 
+let cachedElevationPanelMaterial: THREE.MeshStandardMaterial | null = null;
+let cachedFlatElevationPanelMaterial: THREE.MeshStandardMaterial | null = null;
+
+/**
+ * A dedicated cached material for elevation-panel slabs — NOT a call to
+ * getWallMaterial(), which ignores its own `color` argument after the
+ * first call (a real caching bug, harmless today only because every wall
+ * happens to request the same color — see its own doc). Reusing that cache
+ * here would silently hand an elevation panel the WALL's tan-grey plaster
+ * instead of its own cream facade tone whenever a model has both.
+ */
+function getElevationPanelMaterial(color: number): THREE.MeshStandardMaterial {
+  if (!canUseCanvas()) {
+    if (!cachedFlatElevationPanelMaterial) cachedFlatElevationPanelMaterial = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+    return cachedFlatElevationPanelMaterial;
+  }
+  if (cachedElevationPanelMaterial) return cachedElevationPanelMaterial;
+  const colorTex = makePlasterTexture(color);
+  const bumpTex = makeBumpTexture(128, 0.3);
+  // Elevation panels run tens of meters wide (a real reference file's front
+  // elevation is ~38m) vs. a wall's few meters — a bigger repeat count keeps
+  // the plaster grain from stretching into visibly giant blotches, same
+  // "fixed tiling density, not exactly proportional" tradeoff as walls.
+  colorTex.repeat.set(24, 6);
+  bumpTex.repeat.set(48, 12);
+  cachedElevationPanelMaterial = new THREE.MeshStandardMaterial({ map: colorTex, bumpMap: bumpTex, bumpScale: 0.01, roughness: 0.88, metalness: 0.02 });
+  return cachedElevationPanelMaterial;
+}
+
+// How far a traced stroke's relief bar sticks out from the panel's own
+// front face, and how wide its cross-section is in-plane — an elevation's
+// 2D lines carry no width/depth of their own (a CAD line is infinitely
+// thin), so these are a deliberately modest, stated approximation of an
+// applied trim/ironwork/moulding thickness, NOT a measured value — same
+// spirit as ELEVATION_PANEL_THICKNESS_MM above. Real relief (a heavy stone
+// cornice vs. a slim window mullion) isn't distinguishable from bare 2D
+// line geometry, so every traced stroke gets the same modest bar rather
+// than a guessed-at variation.
+const ELEVATION_STROKE_RELIEF_DEPTH_MM = 15;
+const ELEVATION_STROKE_RELIEF_WIDTH_MM = 20;
+
+/**
+ * Every traced elevation stroke as a real raised 3D bar (a thin extruded
+ * box following the stroke's own path) instead of a flat, zero-thickness
+ * line — so an arch, a gate's bars, a balcony rail, or a run of cornice
+ * moulding actually catches light and casts shadow like the applied
+ * detail it represents, rather than reading as a drawn line floating on a
+ * flat slab. Built as one big non-indexed triangle soup (not one mesh per
+ * stroke — a real file traces 8000+ of these) so this stays one draw call
+ * regardless of how many strokes a file has. Only the outward-facing top
+ * of each bar plus its two side walls are built (no end caps) — cheap, and
+ * the gap it leaves is sub-millimeter at real building scale.
+ */
+function buildStrokeReliefGeometry(strokes: { x1: number; y1: number; x2: number; y2: number }[], baseZMm: number): THREE.BufferGeometry | null {
+  if (strokes.length === 0) return null;
+  const hw = ELEVATION_STROKE_RELIEF_WIDTH_MM / 2;
+  const zBase = baseZMm * MM;
+  const zTop = (baseZMm + ELEVATION_STROKE_RELIEF_DEPTH_MM) * MM;
+  const positions = new Float32Array(strokes.length * 18 * 3); // 3 quads (top + 2 sides) * 2 tris * 3 verts * 3 floats
+  let i = 0;
+  const push = (x: number, y: number, z: number) => {
+    positions[i++] = x;
+    positions[i++] = y;
+    positions[i++] = z;
+  };
+  for (const s of strokes) {
+    const dx = s.x2 - s.x1,
+      dy = s.y2 - s.y1;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.1) continue; // degenerate — a real point, not a segment
+    const ux = dx / len,
+      uy = dy / len;
+    const nx = (-uy * hw) / 1000,
+      ny = (ux * hw) / 1000; // perpendicular half-width, already mm->Three units
+    const x1 = s.x1 * MM,
+      y1 = s.y1 * MM,
+      x2 = s.x2 * MM,
+      y2 = s.y2 * MM;
+    // a0/a1 = start edge (+n/-n), b0/b1 = end edge (+n/-n), 't' suffix = raised top
+    const a0x = x1 + nx,
+      a0y = y1 + ny;
+    const a1x = x1 - nx,
+      a1y = y1 - ny;
+    const b0x = x2 + nx,
+      b0y = y2 + ny;
+    const b1x = x2 - nx,
+      b1y = y2 - ny;
+    // top face
+    push(a0x, a0y, zTop);
+    push(b0x, b0y, zTop);
+    push(b1x, b1y, zTop);
+    push(a0x, a0y, zTop);
+    push(b1x, b1y, zTop);
+    push(a1x, a1y, zTop);
+    // +n side wall
+    push(a0x, a0y, zBase);
+    push(b0x, b0y, zBase);
+    push(b0x, b0y, zTop);
+    push(a0x, a0y, zBase);
+    push(b0x, b0y, zTop);
+    push(a0x, a0y, zTop);
+    // -n side wall
+    push(a1x, a1y, zBase);
+    push(a1x, a1y, zTop);
+    push(b1x, b1y, zTop);
+    push(a1x, a1y, zBase);
+    push(b1x, b1y, zTop);
+    push(b1x, b1y, zBase);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions.subarray(0, i), 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 function box(lengthMm: number, thicknessMm: number, heightMm: number, color: number) {
   const geo = new THREE.BoxGeometry(Math.max(lengthMm, 1) * MM, Math.max(heightMm, 1) * MM, Math.max(thicknessMm, 1) * MM);
   const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.02 });
@@ -846,11 +961,6 @@ const ELEVATION_PANEL_THICKNESS_MM = 200;
 // How far in front of the building's own footprint the panel sits when a
 // floor plan also exists, so it doesn't visually clip into real walls.
 const ELEVATION_PANEL_STANDOFF_MM = 600;
-// How far the traced line-art sits proud of the panel's own front face —
-// just enough to avoid z-fighting with the slab underneath, not a real
-// measured relief depth.
-const ELEVATION_STROKE_RELIEF_MM = 3;
-
 /**
  * A flat, upright facade panel built from an elevation view's own measured
  * width/height, door/window cutouts where the source file tagged them, and
@@ -906,7 +1016,7 @@ function buildElevationPanel(e: CadEntityInput, placement: { centerX: number; fr
   }
 
   const geometry = new THREE.ExtrudeGeometry(shape, { depth: ELEVATION_PANEL_THICKNESS_MM * MM, bevelEnabled: false });
-  const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xe4ddcb, roughness: 0.9 }));
+  const mesh = new THREE.Mesh(geometry, getElevationPanelMaterial(0xe4ddcb));
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   mesh.userData = { cadEntityId: e.id, cadType: "elevation_panel" };
@@ -916,29 +1026,24 @@ function buildElevationPanel(e: CadEntityInput, placement: { centerX: number; fr
 
   // Every real line/arc stroke the source file actually drew on this
   // elevation (see extractElevationStrokes' doc in classify.ts) — a door
-  // arch, a gate's bars, a balcony rail, a molding line, whatever it is —
-  // traced verbatim onto the panel's outward-facing side, slightly proud
-  // of the surface so it doesn't z-fight with the slab underneath. This is
-  // the file's own real 2D linework, not a guess at what it depicts: a
-  // blank rectangle (the old result whenever the file never tagged its
-  // openings as named blocks) now shows the actual drawn detail instead.
-  const strokes = geo.strokes ?? [];
-  if (strokes.length > 0) {
-    const positions = new Float32Array(strokes.length * 6);
-    let i = 0;
-    for (const s of strokes) {
-      positions[i++] = s.x1 * MM;
-      positions[i++] = s.y1 * MM;
-      positions[i++] = ELEVATION_PANEL_THICKNESS_MM * MM + ELEVATION_STROKE_RELIEF_MM * MM;
-      positions[i++] = s.x2 * MM;
-      positions[i++] = s.y2 * MM;
-      positions[i++] = ELEVATION_PANEL_THICKNESS_MM * MM + ELEVATION_STROKE_RELIEF_MM * MM;
-    }
-    const strokeGeometry = new THREE.BufferGeometry();
-    strokeGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    const strokeLines = new THREE.LineSegments(strokeGeometry, new THREE.LineBasicMaterial({ color: 0x3a3226 }));
-    strokeLines.userData = { cadEntityId: e.id, cadType: "elevation_panel", note: "traced from the source drawing's own line/arc geometry" };
-    group.add(strokeLines);
+  // arch, a gate's bars, a balcony rail, a moulding line, whatever it is —
+  // built as an actual raised 3D bar standing proud of the panel's face
+  // (see buildStrokeReliefGeometry's doc for why a bar, not a flat line,
+  // and what its width/depth are and aren't). This is the file's own real
+  // 2D linework given real form, not a guess at what it depicts: a blank
+  // rectangle (the old result whenever the file never tagged its openings
+  // as named blocks) now shows the actual drawn detail as sculpted relief.
+  const reliefGeometry = buildStrokeReliefGeometry(geo.strokes ?? [], ELEVATION_PANEL_THICKNESS_MM);
+  if (reliefGeometry) {
+    // A slight iron/carved-stone sheen (not flat matte paint) so the relief
+    // reads as applied material under the scene's directional light instead
+    // of a uniformly flat-lit silhouette.
+    const reliefMaterial = new THREE.MeshStandardMaterial({ color: 0x4a4030, roughness: 0.55, metalness: 0.18 });
+    const reliefMesh = new THREE.Mesh(reliefGeometry, reliefMaterial);
+    reliefMesh.castShadow = true;
+    reliefMesh.receiveShadow = true;
+    reliefMesh.userData = { cadEntityId: e.id, cadType: "elevation_panel", note: "traced from the source drawing's own line/arc geometry, given a stated (not measured) relief thickness" };
+    group.add(reliefMesh);
   }
 
   group.position.set((placement.centerX - widthMm / 2) * MM, 0, placement.frontY * MM);
