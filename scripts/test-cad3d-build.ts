@@ -4,7 +4,7 @@
  * Run with: npx tsx scripts/test-cad3d-build.ts
  */
 import * as THREE from "three";
-import { buildScene, type CadEntityInput } from "../src/lib/cad3d/build-scene";
+import { buildScene, clusterFurniturePositions, inferRoomLabel, furnitureLabelText, type CadEntityInput } from "../src/lib/cad3d/build-scene";
 
 const wallHeight = 3000;
 
@@ -90,3 +90,79 @@ function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);
   if (!ok) process.exitCode = 1;
 }
+
+/*
+  Regression case for "bedrooms, kitchens... nothing is mentioned" — a
+  toilet+basin cluster should read as a whole-room BATHROOM label (not just
+  the per-item WC/BASIN tags), a bed+wardrobe cluster as BEDROOM, and a lone
+  chair far from either (no confident room signal) should get no room label
+  at all rather than a wrong guess. Room labels are rendered as canvas-text
+  Sprites (see makeLabelSprite), which need a DOM `document` this plain-Node
+  test script doesn't have — so this exercises the underlying
+  clusterFurniturePositions()/inferRoomLabel() logic directly rather than
+  buildScene()'s sprite output.
+*/
+const roomLabelFurniture = [
+  { position: { x: 0, y: 0 }, tag: furnitureLabelText("WC") },
+  { position: { x: 800, y: 0 }, tag: furnitureLabelText("wash basin") },
+  { position: { x: 20000, y: 0 }, tag: furnitureLabelText("BED_QUEEN") },
+  { position: { x: 21200, y: 500 }, tag: furnitureLabelText("wardrobe") },
+  { position: { x: 40000, y: 0 }, tag: furnitureLabelText("chair") },
+];
+const roomClusters = clusterFurniturePositions(roomLabelFurniture);
+check("room clustering finds 3 separate clusters (bathroom, bedroom, lone chair)", roomClusters.length === 3);
+const bathroomCluster = roomClusters.find((c) => c.some((it) => it.position.x === 0));
+const bedroomCluster = roomClusters.find((c) => c.some((it) => it.position.x === 20000));
+const chairCluster = roomClusters.find((c) => c.some((it) => it.position.x === 40000));
+check("bathroom cluster (WC+basin) infers BATHROOM", !!bathroomCluster && inferRoomLabel(new Set(bathroomCluster.map((c) => c.tag))) === "BATHROOM");
+check("bedroom cluster (bed+wardrobe) infers BEDROOM", !!bedroomCluster && inferRoomLabel(new Set(bedroomCluster.map((c) => c.tag))) === "BEDROOM");
+check("lone chair (no confident room signal) infers no room label", !!chairCluster && inferRoomLabel(new Set(chairCluster.map((c) => c.tag))) === null);
+
+// buildScene() itself must still run clean end-to-end with these furniture
+// entities (no crash from the new room-label pass) even though the sprites
+// it would add are silently skipped without a DOM.
+const roomLabelEntities: CadEntityInput[] = [
+  { id: "wc1", type: "furniture", layerName: "A-FURN", label: "WC", geometry: { position: { x: 0, y: 0 } }, widthMm: 400, depthMm: 600, heightMm: 400, rotationDeg: 0 },
+  { id: "basin1", type: "furniture", layerName: "A-FURN", label: "wash basin", geometry: { position: { x: 800, y: 0 } }, widthMm: 500, depthMm: 400, heightMm: 850, rotationDeg: 0 },
+  { id: "bed1", type: "furniture", layerName: "A-FURN", label: "BED_QUEEN", geometry: { position: { x: 20000, y: 0 } }, widthMm: 1500, depthMm: 2000, heightMm: 500, rotationDeg: 0 },
+  { id: "wardrobe1", type: "furniture", layerName: "A-FURN", label: "wardrobe", geometry: { position: { x: 21200, y: 500 } }, widthMm: 1200, depthMm: 600, heightMm: 2000, rotationDeg: 0 },
+  { id: "chair1", type: "furniture", layerName: "A-FURN", label: "chair", geometry: { position: { x: 40000, y: 0 } }, widthMm: 500, depthMm: 500, heightMm: 850, rotationDeg: 0 },
+];
+let roomLabelBuildOk = true;
+try {
+  buildScene(roomLabelEntities, { windowSillMm: 900 });
+} catch {
+  roomLabelBuildOk = false;
+}
+check("buildScene() runs clean with the room-label pass wired in", roomLabelBuildOk);
+
+/*
+  Regression case for "give the option to fill... one room boundary with...
+  tiles or... color paints" — this needs actual per-room floor regions
+  (buildRoomFloorRegions in build-scene.ts), recovered by flood-filling the
+  wall layout since real DXFs almost never draw room boundaries. Two rooms
+  split by a solid dividing wall (no doorway) must come out as 2 separate
+  paintable regions; the same two rooms with a doorway cut into that
+  dividing wall must merge into 1 — a doorway is walkable, so the flood
+  fill must cross it, the same way a person would read the plan.
+*/
+const outerRingWalls: CadEntityInput[] = [
+  { id: "tr-w1", type: "wall", layerName: "A-WALL", geometry: { start: { x: 0, y: 0 }, end: { x: 6000, y: 0 } }, depthMm: 230, heightMm: wallHeight },
+  { id: "tr-w2", type: "wall", layerName: "A-WALL", geometry: { start: { x: 6000, y: 0 }, end: { x: 6000, y: 4000 } }, depthMm: 230, heightMm: wallHeight },
+  { id: "tr-w3", type: "wall", layerName: "A-WALL", geometry: { start: { x: 6000, y: 4000 }, end: { x: 0, y: 4000 } }, depthMm: 230, heightMm: wallHeight },
+  { id: "tr-w4", type: "wall", layerName: "A-WALL", geometry: { start: { x: 0, y: 4000 }, end: { x: 0, y: 0 } }, depthMm: 230, heightMm: wallHeight },
+];
+const middleWall: CadEntityInput = { id: "tr-wmid", type: "wall", layerName: "A-WALL", geometry: { start: { x: 3000, y: 0 }, end: { x: 3000, y: 4000 } }, depthMm: 230, heightMm: wallHeight };
+const wcInLeftRoom: CadEntityInput = { id: "tr-wc", type: "furniture", layerName: "A-FURN", label: "WC", geometry: { position: { x: 1000, y: 1000 } }, widthMm: 400, depthMm: 600, heightMm: 400, rotationDeg: 0 };
+
+const { floorRegions: regionsNoDoor } = buildScene([...outerRingWalls, middleWall, wcInLeftRoom], { windowSillMm: 900 });
+check("two rooms split by a solid dividing wall (no doorway) segment into 2 floor regions", regionsNoDoor.length === 2);
+const bathroomRegion = regionsNoDoor.find((r) => r.roomLabel === "BATHROOM");
+const otherRegion = regionsNoDoor.find((r) => r !== bathroomRegion);
+check("the region containing the WC is labeled BATHROOM", !!bathroomRegion);
+check("the region without furniture gets no confident room label", !!otherRegion && otherRegion.roomLabel === null);
+check("both regions report a plausible floor area (each ~11 m² for a 2.77m x 4m clear room)", regionsNoDoor.every((r) => r.areaM2 > 5 && r.areaM2 < 15));
+
+const doorInMiddleWall: CadEntityInput = { id: "tr-door", type: "door", layerName: "A-DOOR", label: "DOOR_900", geometry: { position: { x: 3000, y: 2000 } }, widthMm: 900, depthMm: 50, heightMm: 2100, rotationDeg: 90 };
+const { floorRegions: regionsWithDoor } = buildScene([...outerRingWalls, middleWall, doorInMiddleWall], { windowSillMm: 900 });
+check("cutting a doorway into the dividing wall merges the two rooms into 1 connected floor region", regionsWithDoor.length === 1);

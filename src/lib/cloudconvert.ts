@@ -27,6 +27,44 @@ function assertCloudConvertConfigured() {
   }
 }
 
+/**
+ * The SDK is a thin axios wrapper with no custom error type of its own, so
+ * a failed request surfaces as a raw axios error — `err.response.status` +
+ * `err.response.data` (CloudConvert's own JSON error body) when the request
+ * reached the server, or just `err.message` (e.g. a DNS/network failure)
+ * when it never did. Pulls out whatever's actually useful instead of
+ * letting a generic "Couldn't start..." hide it.
+ */
+function describeCloudConvertError(err: unknown): string | null {
+  if (!err || typeof err !== "object") return null;
+  const response = "response" in err ? (err as { response?: unknown }).response : undefined;
+  let status: number | undefined;
+  let bodyMessage: string | undefined;
+  if (response && typeof response === "object") {
+    if ("status" in response && typeof (response as { status?: unknown }).status === "number") {
+      status = (response as { status: number }).status;
+    }
+    const data = "data" in response ? (response as { data?: unknown }).data : undefined;
+    if (data && typeof data === "object") {
+      const d = data as Record<string, unknown>;
+      if (typeof d.message === "string") bodyMessage = d.message;
+      else if (Array.isArray(d.errors) && d.errors.length > 0) {
+        const first = d.errors[0] as unknown;
+        if (typeof first === "string") bodyMessage = first;
+        else if (first && typeof first === "object") {
+          const f = first as Record<string, unknown>;
+          bodyMessage = (typeof f.detail === "string" && f.detail) || (typeof f.title === "string" && f.title) || undefined;
+        }
+      }
+    }
+  }
+  if (status === 401 || status === 403) return "the CloudConvert API key was rejected (invalid, expired, or revoked)";
+  if (status) return `CloudConvert returned HTTP ${status}${bodyMessage ? ` — ${bodyMessage}` : ""}`;
+  if (bodyMessage) return bodyMessage;
+  if ("message" in err && typeof (err as { message?: unknown }).message === "string") return (err as { message: string }).message;
+  return null;
+}
+
 const POLL_INTERVAL_MS = 4000;
 // Comfortably under Vercel's own 300s function ceiling on Hobby (Fluid
 // compute), leaving headroom to return our own clear timeout error instead
@@ -46,8 +84,19 @@ export async function convertDwgToDxf(opts: { sourceUrl: string; filename: strin
         "export-file": { operation: "export/url", input: "convert-file" },
       },
     });
-  } catch {
-    throw new Error("Couldn't start the DWG conversion. Please try again.");
+  } catch (err) {
+    // This wraps the request that CREATES the job (before any conversion
+    // even starts) — a failure here almost always means the API key itself
+    // is wrong/expired/revoked (a 401/403 from CloudConvert) or the request
+    // never reached them at all (DNS/network), not a conversion problem.
+    // Swallowing the real cause into one generic message made this
+    // undiagnosable from the outside — surface CloudConvert's own status
+    // code/response body (or the raw error) both to the caller and to the
+    // server logs so a real failure (bad/expired key, wrong scope, network
+    // block) is visible instead of always looking like a retry-and-hope.
+    const detail = describeCloudConvertError(err);
+    console.error("[cloudconvert] jobs.create failed:", detail, err);
+    throw new Error(`Couldn't start the DWG conversion${detail ? `: ${detail}` : ""}. Please try again, or check the CLOUDCONVERT_API_KEY is still valid in the CloudConvert dashboard.`);
   }
 
   const startedAt = Date.now();

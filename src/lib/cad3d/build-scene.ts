@@ -92,10 +92,8 @@ function makePlasterTexture(hex: number): THREE.Texture {
 }
 
 /** One square floor tile per texture image — repeat.set() on the caller tiles it across the real floor size, so the grout grid lines up with real-world 600mm tiles instead of stretching one image over the whole slab. */
-function makeTileTexture(): THREE.Texture {
+function makeTileTexture(base = "#d9cfb4", grout = "#a89a7c"): THREE.Texture {
   return createCanvasTexture(256, (ctx, s) => {
-    const grout = "#a89a7c";
-    const base = "#d9cfb4";
     ctx.fillStyle = grout;
     ctx.fillRect(0, 0, s, s);
     const inset = Math.round(s * 0.035);
@@ -594,16 +592,62 @@ function buildPlant(w: number, d: number): THREE.Group {
   return g;
 }
 
-/** Covers WC/basin/sink-type sanitary fixtures — a simple two-tier porcelain-white mass (bowl/counter + tank/splashback) rather than a plain furniture-brown box, since a toilet or basin rendered in wood-tan reads as obviously wrong even at a glance. */
-function buildSanitary(w: number, d: number, h: number): THREE.Group {
+// Matte satin porcelain, not polished stone — roughness ~0.45 with near-zero
+// metalness reads as ceramic under the scene's lighting; the earlier
+// roughness (0.25) was reflective enough that a plain white box read as a
+// glossy marble slab instead of a bathroom fixture ("bathroom... looking
+// weird with the white marble" — that gloss was the whole problem, not the
+// color, which is why the fix here is a rougher finish plus a rounder
+// shape, not a different color).
+const PORCELAIN_ROUGHNESS = 0.45;
+const PORCELAIN_METALNESS = 0.03;
+
+/** A toilet — cylindrical bowl + a torus rim (reads as a seat opening from any angle) + a tank behind, instead of a plain box. Used for WC/urinal/bidet-type fixtures specifically; see buildBasin for wash basins/sinks. */
+function buildToilet(w: number, d: number, h: number): THREE.Group {
   const g = new THREE.Group();
-  const porcelain = furnMat(0xf1f0ea, 0.25, 0.05);
-  const base = new THREE.Mesh(new THREE.BoxGeometry(w, h * 0.55, d), porcelain);
-  base.position.y = (h * 0.55) / 2;
-  g.add(base);
-  const tank = new THREE.Mesh(new THREE.BoxGeometry(w * 0.82, h * 0.45, d * 0.32), porcelain);
-  tank.position.set(0, h * 0.55 + (h * 0.45) / 2, -d * 0.3);
+  const porcelain = furnMat(0xf6f4ee, PORCELAIN_ROUGHNESS, PORCELAIN_METALNESS);
+  const seatMat = furnMat(0xffffff, 0.35, 0.02);
+
+  const tankH = h * 0.5;
+  const tank = new THREE.Mesh(new THREE.BoxGeometry(w * 0.76, tankH, d * 0.26), porcelain);
+  tank.position.set(0, h - tankH / 2, -d * 0.37);
   g.add(tank);
+
+  const bowlR = Math.min(w, d) * 0.36;
+  const bowlH = h * 0.42;
+  const bowl = new THREE.Mesh(new THREE.CylinderGeometry(bowlR, bowlR * 0.7, bowlH, 16), porcelain);
+  bowl.position.set(0, bowlH / 2, d * 0.06);
+  g.add(bowl);
+
+  const seat = new THREE.Mesh(new THREE.TorusGeometry(Math.max(bowlR * 0.75, 0.02), Math.max(bowlR * 0.16, 0.006), 8, 20), seatMat);
+  seat.rotation.x = Math.PI / 2;
+  seat.position.set(0, bowlH + 0.008, d * 0.06);
+  g.add(seat);
+
+  return g;
+}
+
+/** A wash basin/sink — a counter slab with a recessed round bowl and a low splashback, instead of a plain box. */
+function buildBasin(w: number, d: number, h: number): THREE.Group {
+  const g = new THREE.Group();
+  const porcelain = furnMat(0xf6f4ee, PORCELAIN_ROUGHNESS, PORCELAIN_METALNESS);
+  const bowlMat = furnMat(0xffffff, 0.3, 0.02);
+
+  const counterH = h * 0.52;
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(w, counterH, d), porcelain);
+  counter.position.y = counterH / 2;
+  g.add(counter);
+
+  const bowlR = Math.min(w, d) * 0.33;
+  const bowlH = counterH * 0.5;
+  const bowl = new THREE.Mesh(new THREE.CylinderGeometry(bowlR, bowlR * 0.8, bowlH, 16), bowlMat);
+  bowl.position.y = counterH - bowlH * 0.55;
+  g.add(bowl);
+
+  const splash = new THREE.Mesh(new THREE.BoxGeometry(w * 0.92, h * 0.3, Math.max(d * 0.035, 0.012)), porcelain);
+  splash.position.set(0, counterH + (h * 0.3) / 2, -d / 2 + 0.006);
+  g.add(splash);
+
   return g;
 }
 
@@ -647,7 +691,11 @@ function buildFurniture(label: string, widthMm: number, depthMm: number, heightM
       g = buildPlant(w, d);
       break;
     case "sanitary":
-      g = buildSanitary(w, d, h);
+      // "sanitary" (from FURNITURE_KIND_PATTERNS) covers WC/urinal/bidet AND
+      // basin/sink alike — they need visually distinct shapes, so re-check
+      // the finer distinction here rather than adding a whole new kind just
+      // for shape selection.
+      g = /\bwc\b|toilet|commode|urinal|bidet/i.test(label) ? buildToilet(w, d, h) : buildBasin(w, d, h);
       break;
     case "appliance":
       g = buildAppliance(w, d, h);
@@ -738,7 +786,7 @@ const FURNITURE_LABEL_OVERRIDES: [RegExp, string][] = [
   [/plant|planter/i, "PLANT"],
 ];
 
-function furnitureLabelText(label: string | null | undefined): string {
+export function furnitureLabelText(label: string | null | undefined): string {
   const trimmed = (label ?? "").trim();
   for (const [re, text] of FURNITURE_LABEL_OVERRIDES) if (re.test(trimmed)) return text;
   // Fall back to the CAD block's own name if it's short and not internal
@@ -862,6 +910,334 @@ function buildFloorSlab(walls: WallInput[]): THREE.Mesh | null {
   return mesh;
 }
 
+/*
+  ---- Floor finish catalog: tiles and paints the user can pick per room ----
+  A small, curated set rather than a full color wheel — enough variety to
+  tell rooms apart at a glance ("give the different options of the tiles or
+  the color paints") without turning the picker into a paint-store SKU
+  list. Every non-paint finish is a procedural canvas texture (no network
+  asset dependency, same approach as the existing tile floor).
+*/
+export type FloorFinish = { id: string; label: string; swatch: string };
+export const FLOOR_FINISHES: FloorFinish[] = [
+  { id: "tile-cream", label: "Ceramic Tile — Cream", swatch: "#d9cfb4" },
+  { id: "tile-white", label: "Ceramic Tile — White", swatch: "#eef0ee" },
+  { id: "tile-grey", label: "Ceramic Tile — Grey", swatch: "#9aa1a6" },
+  { id: "wood-oak", label: "Wood Plank — Oak", swatch: "#c79a67" },
+  { id: "wood-walnut", label: "Wood Plank — Walnut", swatch: "#6b4a30" },
+  { id: "marble-white", label: "Marble — White & Grey", swatch: "#eeeceb" },
+  { id: "paint-white", label: "Paint — White", swatch: "#f5f4f0" },
+  { id: "paint-blue", label: "Paint — Sky Blue", swatch: "#a9cbe0" },
+  { id: "paint-green", label: "Paint — Sage Green", swatch: "#b7c9a8" },
+  { id: "paint-terracotta", label: "Paint — Terracotta", swatch: "#c98c62" },
+  { id: "paint-charcoal", label: "Paint — Charcoal", swatch: "#4a4a4a" },
+];
+
+const TILE_COLOR_PRESETS: Record<string, [string, string]> = {
+  cream: ["#d9cfb4", "#a89a7c"],
+  white: ["#eef0ee", "#c9c9c2"],
+  grey: ["#9aa1a6", "#75797d"],
+};
+const WOOD_COLOR_PRESETS: Record<string, [string, string]> = {
+  oak: ["#c79a67", "#a97e4e"],
+  walnut: ["#6b4a30", "#523524"],
+};
+const MARBLE_COLOR_PRESETS: Record<string, [string, string]> = {
+  white: ["#eeeceb", "#9b968e"],
+};
+const PAINT_COLOR_PRESETS: Record<string, string> = {
+  white: "#f5f4f0",
+  blue: "#a9cbe0",
+  green: "#b7c9a8",
+  terracotta: "#c98c62",
+  charcoal: "#4a4a4a",
+};
+
+function makeWoodTexture(base: string, dark: string): THREE.Texture {
+  return createCanvasTexture(256, (ctx, s) => {
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, s, s);
+    const plankH = s / 6;
+    for (let i = 0; i < 6; i++) {
+      const y = i * plankH;
+      ctx.fillStyle = i % 2 === 0 ? base : dark;
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(0, y, s, plankH);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "rgba(0,0,0,0.25)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(s, y);
+      ctx.stroke();
+      for (let g = 0; g < 6; g++) {
+        const gy = y + Math.random() * plankH;
+        ctx.strokeStyle = `rgba(0,0,0,${0.04 + Math.random() * 0.06})`;
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.bezierCurveTo(s * 0.3, gy + 2, s * 0.7, gy - 2, s, gy);
+        ctx.stroke();
+      }
+    }
+  });
+}
+
+function makeMarbleTexture(base: string, vein: string): THREE.Texture {
+  return createCanvasTexture(256, (ctx, s) => {
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, s, s);
+    ctx.strokeStyle = vein;
+    for (let i = 0; i < 10; i++) {
+      ctx.lineWidth = 0.5 + Math.random() * 1.5;
+      ctx.globalAlpha = 0.25 + Math.random() * 0.35;
+      ctx.beginPath();
+      let x = Math.random() * s;
+      let y = Math.random() * s;
+      ctx.moveTo(x, y);
+      for (let j = 0; j < 5; j++) {
+        x += (Math.random() - 0.5) * s * 0.5;
+        y += (Math.random() - 0.5) * s * 0.5;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  });
+}
+
+/** Builds a fresh, independently-repeatable material for one floor finish id (see FLOOR_FINISHES) — used both for a room's initial default finish and whenever the user repaints it from the picker. */
+export function buildFloorFinishMaterial(finishId: string): THREE.MeshStandardMaterial {
+  const dash = finishId.indexOf("-");
+  const kind = dash === -1 ? finishId : finishId.slice(0, dash);
+  const variant = dash === -1 ? "" : finishId.slice(dash + 1);
+
+  if (kind === "paint") {
+    const hex = PAINT_COLOR_PRESETS[variant] ?? PAINT_COLOR_PRESETS.white;
+    return new THREE.MeshStandardMaterial({ color: new THREE.Color(hex), roughness: 0.6, metalness: 0.02 });
+  }
+  if (!canUseCanvas()) {
+    const fallback = kind === "wood" ? WOOD_COLOR_PRESETS[variant]?.[0] : kind === "marble" ? MARBLE_COLOR_PRESETS[variant]?.[0] : TILE_COLOR_PRESETS[variant]?.[0];
+    return new THREE.MeshStandardMaterial({ color: new THREE.Color(fallback ?? "#d9cfb4"), roughness: 0.5 });
+  }
+  let tex: THREE.Texture;
+  let roughness = 0.5;
+  let metalness = 0.03;
+  if (kind === "wood") {
+    const [base, dark] = WOOD_COLOR_PRESETS[variant] ?? WOOD_COLOR_PRESETS.oak;
+    tex = makeWoodTexture(base, dark);
+    roughness = 0.42;
+  } else if (kind === "marble") {
+    const [base, vein] = MARBLE_COLOR_PRESETS[variant] ?? MARBLE_COLOR_PRESETS.white;
+    tex = makeMarbleTexture(base, vein);
+    roughness = 0.22;
+    metalness = 0.05;
+  } else {
+    const [base, grout] = TILE_COLOR_PRESETS[variant] ?? TILE_COLOR_PRESETS.cream;
+    tex = makeTileTexture(base, grout);
+  }
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(4, 4);
+  return new THREE.MeshStandardMaterial({ map: tex, roughness, metalness });
+}
+
+// A room's furniture already tells us what it probably is (see
+// inferRoomLabel below) — use that to pick a sensible starting finish
+// instead of tiling every room identically cream, so a freshly-generated
+// model already looks deliberate before anyone touches the picker.
+const DEFAULT_FINISH_BY_ROOM: Record<string, string> = {
+  BATHROOM: "tile-white",
+  "WASH AREA": "tile-white",
+  KITCHEN: "tile-grey",
+  BEDROOM: "wood-oak",
+  "LIVING ROOM": "wood-walnut",
+  "DINING AREA": "wood-walnut",
+};
+
+export type FloorRegion = { id: string; object: THREE.Mesh; roomLabel: string | null; areaM2: number };
+
+const ROOM_GRID_MAX_CELLS_PER_AXIS = 160; // caps grid resolution so even a large/irregular footprint segments in well under a second
+const ROOM_GRID_MIN_CELL_MM = 90;
+const ROOM_GRID_MAX_CELL_MM = 260;
+const MIN_ROOM_REGION_AREA_M2 = 1.2; // filters out slivers/noise — a stray 0.3m² pocket between two walls isn't a paintable room
+
+/*
+  ---- Per-room floor regions, for the paint/tile picker ----
+  "give the option to fill... one room boundary with... tiles or... color
+  paints" needs an actual room BOUNDARY to fill, and — per buildFloorSlab's
+  doc above — most real DXFs never draw one. This recovers room boundaries
+  the same way a person reads a floor plan: rasterize the building
+  footprint onto a fine grid, mark any cell a wall's centerline (+half its
+  thickness) passes through as blocked, punch a clearing through that
+  blocking at every doorway (a person can walk through a door, so a flood
+  fill should too), and flood-fill the rest — each connected component of
+  open floor IS a room, wall-separated from its neighbors, whether or not
+  the DXF ever labeled it. Windows are left blocking (you can't walk
+  through one), which is a reasonable approximation for exterior walls.
+*/
+function buildRoomFloorRegions(walls: WallInput[], doors: OpeningInput[], furnitureRefs: { position: Pt; tag: string }[]): FloorRegion[] {
+  if (walls.length === 0) return [];
+  const pts = walls.flatMap((w) => [w.geometry.start, w.geometry.end]);
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const widthMm = maxX - minX;
+  const depthMm = maxY - minY;
+  if (widthMm < 500 || depthMm < 500) return [];
+
+  const cellMm = Math.min(ROOM_GRID_MAX_CELL_MM, Math.max(ROOM_GRID_MIN_CELL_MM, Math.max(widthMm, depthMm) / ROOM_GRID_MAX_CELLS_PER_AXIS));
+  const cols = Math.max(1, Math.ceil(widthMm / cellMm));
+  const rows = Math.max(1, Math.ceil(depthMm / cellMm));
+  if (cols * rows > 60000 || cols * rows === 0) return []; // safety valve — bail rather than build a runaway grid on some pathological input
+
+  const blocked = new Uint8Array(cols * rows);
+  const idx = (gx: number, gy: number) => gy * cols + gx;
+  const cellCenter = (gx: number, gy: number): Pt => ({ x: minX + (gx + 0.5) * cellMm, y: minY + (gy + 0.5) * cellMm });
+  function distToSegment(p: Pt, a: Pt, b: Pt): number {
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const lenSq = abx * abx + aby * aby || 1e-9;
+    let t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p.x - (a.x + t * abx), p.y - (a.y + t * aby));
+  }
+
+  for (const w of walls) {
+    const half = (w.depthMm ?? 230) / 2 + cellMm * 0.6;
+    const { start, end } = w.geometry;
+    const gxMin = Math.max(0, Math.floor((Math.min(start.x, end.x) - half - minX) / cellMm));
+    const gxMax = Math.min(cols - 1, Math.ceil((Math.max(start.x, end.x) + half - minX) / cellMm));
+    const gyMin = Math.max(0, Math.floor((Math.min(start.y, end.y) - half - minY) / cellMm));
+    const gyMax = Math.min(rows - 1, Math.ceil((Math.max(start.y, end.y) + half - minY) / cellMm));
+    for (let gy = gyMin; gy <= gyMax; gy++) {
+      for (let gx = gxMin; gx <= gxMax; gx++) {
+        if (distToSegment(cellCenter(gx, gy), start, end) <= half) blocked[idx(gx, gy)] = 1;
+      }
+    }
+  }
+
+  for (const d of doors) {
+    const r = Math.max((d.widthMm ?? 900) / 2, 400);
+    const gxMin = Math.max(0, Math.floor((d.geometry.position.x - r - minX) / cellMm));
+    const gxMax = Math.min(cols - 1, Math.ceil((d.geometry.position.x + r - minX) / cellMm));
+    const gyMin = Math.max(0, Math.floor((d.geometry.position.y - r - minY) / cellMm));
+    const gyMax = Math.min(rows - 1, Math.ceil((d.geometry.position.y + r - minY) / cellMm));
+    for (let gy = gyMin; gy <= gyMax; gy++) {
+      for (let gx = gxMin; gx <= gxMax; gx++) {
+        const c = cellCenter(gx, gy);
+        if (Math.hypot(c.x - d.geometry.position.x, c.y - d.geometry.position.y) <= r) blocked[idx(gx, gy)] = 0;
+      }
+    }
+  }
+
+  const visited = new Uint8Array(cols * rows);
+  const regionsCells: number[][] = [];
+  for (let s = 0; s < cols * rows; s++) {
+    if (blocked[s] || visited[s]) continue;
+    const cells: number[] = [];
+    const stack = [s];
+    visited[s] = 1;
+    while (stack.length) {
+      const cur = stack.pop()!;
+      cells.push(cur);
+      const gx = cur % cols;
+      const gy = Math.floor(cur / cols);
+      const neighbors: [number, number][] = [
+        [gx - 1, gy],
+        [gx + 1, gy],
+        [gx, gy - 1],
+        [gx, gy + 1],
+      ];
+      for (const [nx, ny] of neighbors) {
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+        const ni = idx(nx, ny);
+        if (blocked[ni] || visited[ni]) continue;
+        visited[ni] = 1;
+        stack.push(ni);
+      }
+    }
+    regionsCells.push(cells);
+  }
+  if (regionsCells.length === 0) return [];
+
+  // The building's open exterior (if the wall loop doesn't fully close, or
+  // this cluster is a small detail sitting inside a much larger empty
+  // sheet — see clusterWalls' doc) floods into one huge region touching
+  // the grid's own edge — that's the surrounding void, not a room, so drop
+  // it before it gets a paintable floor slab of its own.
+  const cellAreaM2 = cellMm * MM * (cellMm * MM);
+  const touchesEdge = (cells: number[]) =>
+    cells.some((c) => {
+      const gx = c % cols;
+      const gy = Math.floor(c / cols);
+      return gx === 0 || gy === 0 || gx === cols - 1 || gy === rows - 1;
+    });
+  const totalOpenCells = regionsCells.reduce((sum, c) => sum + c.length, 0);
+  const rooms = regionsCells.filter((cells) => {
+    const areaM2 = cells.length * cellAreaM2;
+    if (areaM2 < MIN_ROOM_REGION_AREA_M2) return false;
+    if (touchesEdge(cells) && cells.length > totalOpenCells * 0.5) return false; // dominant edge-touching region = the outside
+    return true;
+  });
+  if (rooms.length === 0) return [];
+
+  const cellRegionIndex = new Int32Array(cols * rows).fill(-1);
+  rooms.forEach((cells, i) => cells.forEach((c) => (cellRegionIndex[c] = i)));
+
+  return rooms.map((cells, i) => {
+    const positions: number[] = [];
+    const normals: number[] = [];
+    const uvs: number[] = [];
+    let sumX = 0;
+    let sumY = 0;
+    for (const c of cells) {
+      const gx = c % cols;
+      const gy = Math.floor(c / cols);
+      const x0 = (minX + gx * cellMm) * MM;
+      const x1 = (minX + (gx + 1) * cellMm) * MM;
+      const y0 = (minY + gy * cellMm) * MM;
+      const y1 = (minY + (gy + 1) * cellMm) * MM;
+      positions.push(x0, 0, y0, x1, 0, y0, x1, 0, y1, x0, 0, y0, x1, 0, y1, x0, 0, y1);
+      for (let n = 0; n < 6; n++) normals.push(0, 1, 0);
+      uvs.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
+      sumX += minX + (gx + 0.5) * cellMm;
+      sumY += minY + (gy + 0.5) * cellMm;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+    geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+
+    const tagsHere = new Set<string>();
+    for (const f of furnitureRefs) {
+      const gx = Math.floor((f.position.x - minX) / cellMm);
+      const gy = Math.floor((f.position.y - minY) / cellMm);
+      if (gx < 0 || gy < 0 || gx >= cols || gy >= rows) continue;
+      if (cellRegionIndex[idx(gx, gy)] === i) tagsHere.add(f.tag);
+    }
+    const roomLabel = inferRoomLabel(tagsHere);
+    const areaM2 = cells.length * cellAreaM2;
+    const defaultFinish = DEFAULT_FINISH_BY_ROOM[roomLabel ?? ""] ?? "tile-cream";
+    const material = buildFloorFinishMaterial(defaultFinish);
+    if (material.map) {
+      const rep = Math.max(1, Math.round(Math.sqrt(areaM2) / 0.6));
+      material.map.repeat.set(rep, rep);
+    }
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.position.y = 0.012; // above the base tiled slab (and the 0.006 zone-tint layer) to avoid z-fighting
+    mesh.receiveShadow = true;
+    const id = `room-${i}`;
+    mesh.userData = { cadType: "floorRegion", regionId: id, roomLabel, areaM2, finishId: defaultFinish, centroidMm: { x: sumX / cells.length, y: sumY / cells.length } };
+    return { id, object: mesh, roomLabel, areaM2 };
+  });
+}
+
 /**
  * Groups walls into contiguous clusters by endpoint proximity (simple
  * union-find — cheap even at a few hundred walls). Real-world DWGs
@@ -906,6 +1282,69 @@ function clusterWalls(walls: WallInput[]): WallInput[][] {
     groups.get(r)!.push(w);
   });
   return [...groups.values()];
+}
+
+/*
+  ---- Whole-room labels (BEDROOM / KITCHEN / BATHROOM / ...) ----
+  "Bedrooms, kitchens... nothing is mentioned" — the per-item tags (BED,
+  WC, STOVE, ...) added elsewhere in this file only ever mark a single
+  piece of furniture, not the room it's in. Real DXFs essentially never
+  carry room-boundary polygons (see buildFloorSlab's doc — this is the
+  same reason there's no floor-plan "room" layer to read a name from), so
+  there's no boundary to label directly. Instead this infers a room from
+  furniture that's physically close together — a toilet, a basin, and
+  nothing else within a few meters IS a bathroom, whether or not the DXF
+  ever says so — the same way a person reads a plan.
+*/
+const ROOM_CLUSTER_GAP_MM = 4500; // furniture within ~4.5m of each other reads as sharing one room; real inter-room spacing (a wall's worth of distance, or more) is reliably bigger than this
+
+export function clusterFurniturePositions(items: { position: Pt; tag: string }[]): { position: Pt; tag: string }[][] {
+  const parent = items.map((_, i) => i);
+  function find(x: number): number {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  }
+  function union(a: number, b: number) {
+    const ra = find(a),
+      rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      if (Math.hypot(items[i].position.x - items[j].position.x, items[i].position.y - items[j].position.y) < ROOM_CLUSTER_GAP_MM) union(i, j);
+    }
+  }
+  const groups = new Map<number, { position: Pt; tag: string }[]>();
+  items.forEach((it, i) => {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r)!.push(it);
+  });
+  return [...groups.values()];
+}
+
+// Ordered most- to least-decisive: a toilet or stove in a cluster settles
+// what the room is even if a stray chair is also nearby (open-plan
+// kitchen/dining), so those checks run first. A cluster whose furniture
+// gives no confident signal is left unlabeled rather than guessed.
+const ROOM_LABEL_RULES: [string[], string][] = [
+  [["WC", "URINAL", "BIDET"], "BATHROOM"],
+  [["STOVE", "FRIDGE"], "KITCHEN"],
+  [["BASIN"], "WASH AREA"],
+  [["BED"], "BEDROOM"],
+  [["WARDROBE"], "BEDROOM"],
+  [["SOFA"], "LIVING ROOM"],
+  [["DINING TABLE"], "DINING AREA"],
+];
+
+export function inferRoomLabel(tags: Set<string>): string | null {
+  for (const [members, roomLabel] of ROOM_LABEL_RULES) {
+    if (members.some((m) => tags.has(m))) return roomLabel;
+  }
+  return null;
 }
 
 /**
@@ -980,7 +1419,7 @@ function computeFocusBox(walls: WallInput[], pointEntities: CadEntityInput[]): T
 export function buildScene(
   entities: CadEntityInput[],
   opts: { windowSillMm: number }
-): { group: THREE.Group; validation: ValidationRow[]; focusBox: THREE.Box3 | null } {
+): { group: THREE.Group; validation: ValidationRow[]; focusBox: THREE.Box3 | null; floorRegions: FloorRegion[] } {
   const group = new THREE.Group();
   const validation: ValidationRow[] = [];
 
@@ -988,8 +1427,23 @@ export function buildScene(
   const openings = entities.filter((e): e is OpeningInput => e.type === "door" || e.type === "window") as OpeningInput[];
   const byWall = assignOpeningsToWalls(walls, openings);
 
+  // Collected once up front so both the paint/tile floor regions below and
+  // the whole-room labels further down (see clusterFurniturePositions'
+  // doc) work from the same furniture positions/tags.
+  const furnitureRefs: { position: Pt; tag: string }[] = [];
+  for (const e of entities) {
+    if (e.type !== "furniture") continue;
+    const geo = e.geometry as { position?: Pt };
+    if (!geo.position) continue;
+    furnitureRefs.push({ position: geo.position, tag: furnitureLabelText(e.label) });
+  }
+
   const floor = buildFloorSlab(walls);
   if (floor) group.add(floor);
+
+  const doors = openings.filter((o) => o.type === "door");
+  const floorRegions = buildRoomFloorRegions(walls, doors, furnitureRefs);
+  for (const region of floorRegions) group.add(region.object);
 
   /*
     ---- Validation values: read from construction, not from a rotated AABB ----
@@ -1084,8 +1538,25 @@ export function buildScene(
     }
   }
 
+  // Whole-room labels (BEDROOM / KITCHEN / BATHROOM / ...) — see
+  // clusterFurniturePositions/inferRoomLabel above for why this is inferred
+  // from furniture proximity rather than read off a "room" layer.
+  // (furnitureRefs was already collected near the top of this function.)
+  for (const cluster of clusterFurniturePositions(furnitureRefs)) {
+    const tags = new Set(cluster.map((c) => c.tag));
+    const roomLabel = inferRoomLabel(tags);
+    if (!roomLabel) continue;
+    const cx = cluster.reduce((s, c) => s + c.position.x, 0) / cluster.length;
+    const cy = cluster.reduce((s, c) => s + c.position.y, 0) / cluster.length;
+    const tag = makeLabelSprite(roomLabel, 0.36);
+    if (tag) {
+      tag.position.copy(toThree(cx, cy, 2100));
+      group.add(tag);
+    }
+  }
+
   const pointEntities = entities.filter((e) => e.type === "furniture" || e.type === "column" || e.type === "door" || e.type === "window");
   const focusBox = computeFocusBox(walls, pointEntities);
 
-  return { group, validation, focusBox };
+  return { group, validation, focusBox, floorRegions };
 }

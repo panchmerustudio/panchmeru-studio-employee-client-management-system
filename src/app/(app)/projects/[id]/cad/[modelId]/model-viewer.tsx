@@ -6,7 +6,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
 import { OBJExporter } from "three/addons/exporters/OBJExporter.js";
-import { buildScene, type CadEntityInput, type ValidationRow } from "@/lib/cad3d/build-scene";
+import { buildScene, buildFloorFinishMaterial, FLOOR_FINISHES, type CadEntityInput, type ValidationRow, type FloorRegion } from "@/lib/cad3d/build-scene";
 import { approveCadModel } from "../actions";
 import { Icon } from "@/components/icon";
 
@@ -34,6 +34,7 @@ export function ModelViewer({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneGroupRef = useRef<THREE.Group | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   // The model's own auto-fit framing (center + a size scale), captured once
@@ -43,15 +44,25 @@ export function ModelViewer({
   const [validation, setValidation] = useState<ValidationRow[]>([]);
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [rendering, setRendering] = useState(false);
+  // The paint/tile picker for whichever room floor was last tapped — see
+  // FloorRegion in build-scene.ts (a room boundary recovered from the
+  // wall/door layout, not something the DXF itself provides).
+  const floorRegionsRef = useRef<FloorRegion[]>([]);
+  const [paintPanel, setPaintPanel] = useState<{ regionId: string; roomLabel: string | null; areaM2: number; finishId: string } | null>(null);
   const router = useRouter();
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    const { group, validation: v, focusBox } = buildScene(entities, { windowSillMm });
+    const { group, validation: v, focusBox, floorRegions } = buildScene(entities, { windowSillMm });
     sceneGroupRef.current = group;
+    floorRegionsRef.current = floorRegions;
     setValidation(v);
+    setViewMenuOpen(false);
+    setPaintPanel(null);
 
     // Real floor plans can carry hundreds of walls (646, in one reported
     // case) — shadow-mapped, textured rendering at full quality for every
@@ -69,6 +80,7 @@ export function ModelViewer({
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf3f1ea);
     scene.add(group);
+    sceneRef.current = scene;
     const grid = new THREE.GridHelper(60, 60, 0xc9c3b3, 0xe7e2d6);
     scene.add(grid);
 
@@ -166,14 +178,56 @@ export function ModelViewer({
     };
     window.addEventListener("resize", onResize);
 
+    /*
+      "give the option to fill... one room boundary with... tiles or...
+      color paints" — tapping a room's floor opens the picker below the
+      canvas. Distinguished from an orbit-drag by movement distance between
+      pointerdown/pointerup (OrbitControls itself doesn't expose a
+      "was this a click" signal), same pattern as a typical map/3D-viewer
+      click-vs-pan check.
+    */
+    let downPos: { x: number; y: number } | null = null;
+    const raycaster = new THREE.Raycaster();
+    function pickFloorRegion(clientX: number, clientY: number) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(mouse, camera);
+      const meshes = floorRegionsRef.current.map((r) => r.object);
+      const hits = raycaster.intersectObjects(meshes, false);
+      if (hits.length === 0) {
+        setPaintPanel(null);
+        return;
+      }
+      const hitMesh = hits[0].object;
+      const region = floorRegionsRef.current.find((r) => r.object === hitMesh);
+      if (!region) return;
+      const finishId = (hitMesh.userData as { finishId?: string }).finishId ?? "tile-cream";
+      setPaintPanel({ regionId: region.id, roomLabel: region.roomLabel, areaM2: region.areaM2, finishId });
+    }
+    const onPointerDown = (ev: PointerEvent) => {
+      downPos = { x: ev.clientX, y: ev.clientY };
+    };
+    const onPointerUp = (ev: PointerEvent) => {
+      if (!downPos) return;
+      const moved = Math.hypot(ev.clientX - downPos.x, ev.clientY - downPos.y);
+      downPos = null;
+      if (moved < 6) pickFloorRegion(ev.clientX, ev.clientY);
+    };
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    renderer.domElement.addEventListener("pointerup", onPointerUp);
+
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", onResize);
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      renderer.domElement.removeEventListener("pointerup", onPointerUp);
       controls.dispose();
       renderer.dispose();
       cameraRef.current = null;
       controlsRef.current = null;
       fitRef.current = null;
+      sceneRef.current = null;
+      floorRegionsRef.current = [];
       group.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
           obj.geometry.dispose();
@@ -230,6 +284,137 @@ export function ModelViewer({
     controls.update();
   }
 
+  type ViewPreset = "top" | "bottom" | "front" | "back" | "left" | "right" | "iso";
+
+  /**
+   * Snaps the camera to a standard architectural view — same idea as the
+   * elevation/plan views a person would flip between in SketchUp or Revit.
+   * Reuses the live perspective camera/OrbitControls (not a one-off
+   * orthographic camera) so orbiting/zooming keeps working normally right
+   * after picking one. `eps` nudges top/bottom off perfectly vertical —
+   * OrbitControls' polar angle has a singularity looking straight down the
+   * world Y axis, where a tiny numerical wobble can otherwise make the
+   * view snap to a wrong azimuth on the very next drag.
+   */
+  function setView(preset: ViewPreset) {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    const fit = fitRef.current;
+    if (!camera || !controls || !fit) return;
+    const { center, maxDim } = fit;
+    const d = maxDim * 1.4;
+    const eps = maxDim * 0.001;
+    const eye = maxDim * 0.25; // eye-level lift for the side elevations, so they don't look like they're skimming the floor
+    const positions: Record<ViewPreset, THREE.Vector3> = {
+      top: new THREE.Vector3(center.x + eps, center.y + d, center.z + eps),
+      bottom: new THREE.Vector3(center.x + eps, center.y - d, center.z + eps),
+      front: new THREE.Vector3(center.x, center.y + eye, center.z + d),
+      back: new THREE.Vector3(center.x, center.y + eye, center.z - d),
+      left: new THREE.Vector3(center.x - d, center.y + eye, center.z),
+      right: new THREE.Vector3(center.x + d, center.y + eye, center.z),
+      iso: new THREE.Vector3(center.x + maxDim * 0.9, center.y + maxDim * 0.75, center.z + maxDim * 0.9),
+    };
+    camera.position.copy(positions[preset]);
+    controls.target.copy(center);
+    controls.update();
+    setViewMenuOpen(false);
+  }
+
+  /** Repaints one room's floor with a different tile/paint finish — swaps that region mesh's material live, no scene rebuild. */
+  function applyFloorFinish(regionId: string, finishId: string) {
+    const region = floorRegionsRef.current.find((r) => r.id === regionId);
+    if (!region) return;
+    const mesh = region.object;
+    const oldMaterial = mesh.material as THREE.MeshStandardMaterial;
+    const newMaterial = buildFloorFinishMaterial(finishId);
+    if (newMaterial.map) {
+      const rep = Math.max(1, Math.round(Math.sqrt(region.areaM2) / 0.6));
+      newMaterial.map.repeat.set(rep, rep);
+    }
+    mesh.material = newMaterial;
+    mesh.userData = { ...mesh.userData, finishId };
+    oldMaterial.map?.dispose();
+    oldMaterial.dispose();
+    setPaintPanel((p) => (p && p.regionId === regionId ? { ...p, finishId } : p));
+  }
+
+  /** Renders one frame at a given resolution, off the live canvas, and returns a PNG data URL — used by both the high-res download and the print layout below. */
+  function renderSnapshotDataUrl(camera: THREE.Camera, width: number, height: number, background: THREE.ColorRepresentation = 0xf3f1ea): string | null {
+    const scene = sceneRef.current;
+    if (!scene) return null;
+    const prevBackground = scene.background;
+    scene.background = new THREE.Color(background);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(1);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.render(scene, camera);
+    const dataUrl = renderer.domElement.toDataURL("image/png");
+    renderer.dispose();
+    scene.background = prevBackground;
+    return dataUrl;
+  }
+
+  /** High-quality PNG of exactly what's on screen right now, at well past screen resolution — "render option ... download its PNG file". */
+  function exportHighResPNG() {
+    const camera = cameraRef.current;
+    if (!camera) return;
+    setRendering(true);
+    try {
+      const width = 2400;
+      const height = Math.round(width / camera.aspect);
+      const hiCam = camera.clone();
+      hiCam.aspect = width / height;
+      hiCam.updateProjectionMatrix();
+      const dataUrl = renderSnapshotDataUrl(hiCam, width, height);
+      if (dataUrl) downloadDataUrl(dataUrl, `${slug(modelName)}.png`);
+    } finally {
+      setRendering(false);
+    }
+  }
+
+  /**
+   * A clean, centered, straight-down PLAN print — a dedicated one-off
+   * orthographic camera (not the live perspective one) framed on the WHOLE
+   * building, not just the focused cluster, since a print is meant to
+   * capture the full layout the way a real floor-plan printout would, and
+   * an orthographic projection is what keeps parallel walls parallel with
+   * no perspective distortion, matching how a printed plan is expected to
+   * look. Opens the image in a new tab and triggers the browser's own
+   * print dialog — no server-side PDF step needed.
+   */
+  function printLayout() {
+    const group = sceneGroupRef.current;
+    if (!group) return;
+    setRendering(true);
+    try {
+      const box = new THREE.Box3().setFromObject(group);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const span = Math.max(size.x, size.z, 1) * 1.08; // small margin so walls aren't flush with the page edge
+      const camera = new THREE.OrthographicCamera(-span / 2, span / 2, span / 2, -span / 2, 0.1, Math.max(size.y, 1) * 4 + span);
+      camera.position.set(center.x, box.max.y + span, center.z);
+      camera.lookAt(center);
+      camera.up.set(0, 0, -1); // plan convention: "up" on the page is -Z, not the camera's forward axis
+      camera.updateProjectionMatrix();
+      const dataUrl = renderSnapshotDataUrl(camera, 1600, 1600, 0xffffff);
+      if (dataUrl) openPrintWindow(dataUrl, modelName);
+    } finally {
+      setRendering(false);
+    }
+  }
+
+  function downloadDataUrl(dataUrl: string, filename: string) {
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = filename;
+    a.click();
+  }
+
   function downloadBlob(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -283,8 +468,78 @@ export function ModelViewer({
             <Icon name="maximize" className="h-5 w-5" />
           </button>
         </div>
+        <div className="absolute left-2 top-2">
+          <button
+            type="button"
+            onClick={() => setViewMenuOpen((o) => !o)}
+            aria-label="Choose view"
+            className="flex h-10 items-center gap-1.5 rounded-lg bg-white/90 px-3 text-xs font-medium text-foreground shadow active:bg-white"
+          >
+            <Icon name="cube" className="h-4 w-4" /> Views
+          </button>
+          {viewMenuOpen && (
+            <div className="mt-1 grid w-40 grid-cols-2 gap-1 rounded-lg bg-white/95 p-1.5 shadow">
+              {(
+                [
+                  ["iso", "Isometric"],
+                  ["top", "Top"],
+                  ["bottom", "Bottom"],
+                  ["front", "Front"],
+                  ["back", "Back"],
+                  ["left", "Left"],
+                  ["right", "Right"],
+                ] as const
+              ).map(([preset, label]) => (
+                <button key={preset} type="button" onClick={() => setView(preset)} className="rounded px-2 py-1.5 text-left text-xs hover:bg-slate-100">
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
-      <p className="text-center text-xs text-muted">Drag to orbit, pinch or use the +/− buttons to zoom.</p>
+      <p className="text-center text-xs text-muted">
+        Drag to orbit, pinch or use the +/− buttons to zoom. &quot;Views&quot; jumps to a standard top/front/side view. Tap a room&apos;s floor to change its tile or paint.
+      </p>
+
+      {paintPanel && (
+        <div className="card p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold">{paintPanel.roomLabel ?? "Room"}</p>
+              <p className="text-xs text-muted">{paintPanel.areaM2.toFixed(1)} m² floor</p>
+            </div>
+            <button type="button" onClick={() => setPaintPanel(null)} aria-label="Close" className="rounded p-1 text-muted hover:bg-slate-100">
+              <Icon name="x" className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+            {FLOOR_FINISHES.map((finish) => (
+              <button
+                key={finish.id}
+                type="button"
+                onClick={() => applyFloorFinish(paintPanel.regionId, finish.id)}
+                aria-label={finish.label}
+                title={finish.label}
+                className={`flex flex-col items-center gap-1 rounded-lg p-1.5 ${finish.id === paintPanel.finishId ? "ring-2 ring-offset-1" : ""}`}
+                style={finish.id === paintPanel.finishId ? { ["--tw-ring-color" as string]: "var(--foreground)" } : undefined}
+              >
+                <span className="block h-8 w-8 rounded-full border border-black/10" style={{ backgroundColor: finish.swatch }} />
+                <span className="text-center text-[10px] leading-tight text-muted">{finish.label.split(" — ")[1] ?? finish.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-2">
+        <button type="button" onClick={exportHighResPNG} disabled={rendering} className="btn btn-secondary">
+          <Icon name="camera" className="h-4 w-4" /> {rendering ? "Rendering…" : "Render high-res PNG"}
+        </button>
+        <button type="button" onClick={printLayout} disabled={rendering} className="btn btn-secondary">
+          <Icon name="printer" className="h-4 w-4" /> Print floor plan
+        </button>
+      </div>
 
       <div className="card p-4">
         <div className="mb-3 flex items-center justify-between">
@@ -352,4 +607,34 @@ export function ModelViewer({
 
 function slug(s: string) {
   return s.replace(/[^a-z0-9]+/gi, "_").slice(0, 60) || "model";
+}
+
+function escapeHtml(s: string) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+/** Opens a new tab with the rendered plan centered on the page and immediately prompts the browser's print dialog — no server-side PDF step, just the browser's own "print/save as PDF" flow. */
+function openPrintWindow(dataUrl: string, modelName: string) {
+  const win = window.open("", "_blank");
+  if (!win) return;
+  win.document.write(`<!doctype html>
+<html>
+<head>
+<title>${escapeHtml(modelName)} — floor plan</title>
+<style>
+  @page { margin: 12mm; }
+  html, body { margin: 0; height: 100%; background: #fff; }
+  .wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100%; padding: 16px; box-sizing: border-box; }
+  img { max-width: 100%; max-height: 90vh; object-fit: contain; }
+  .cap { margin-top: 10px; font: 13px system-ui, sans-serif; color: #444; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <img src="${dataUrl}" alt="${escapeHtml(modelName)} floor plan" onload="window.focus(); window.print();" />
+    <div class="cap">${escapeHtml(modelName)} — approximate 3D representation generated from the CAD drawing</div>
+  </div>
+</body>
+</html>`);
+  win.document.close();
 }
