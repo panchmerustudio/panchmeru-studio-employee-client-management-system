@@ -112,7 +112,10 @@ const dxf = {
     // named "door and window" (this app's own reference file has exactly
     // this layer name) — the arc's presence must win over the ambiguous
     // layer name and classify this as a door, not a window.
-    { type: "ARC", layer: "door and window", handle: 64, center: { x: 600, y: 0 }, radius: 450, startAngle: 0, endAngle: 90 },
+    // No startAngle/endAngle here (deliberately) — this exercises the
+    // full-circle fallback in arcBoundingPoints (classify.ts), which is
+    // what the neighboring jamb-tick LINE below is calibrated against.
+    { type: "ARC", layer: "door and window", handle: 64, center: { x: 600, y: 0 }, radius: 450 },
     // Jamb tick touching the arc's own (approximated) bounding-box corner —
     // real touching strokes, not two unrelated marks — so this exercises
     // the actual clustering path rather than the arc alone.
@@ -231,6 +234,37 @@ const planWithInsetResult = classifyDxf(planWithElevationInsetDxf, 1);
 check(
   "a real floor plan with an elevation-titled inset elsewhere on the sheet is still NOT flagged (it has usable wall geometry)",
   detectNonPlanDrawing(planWithElevationInsetDxf, planWithInsetResult) === null
+);
+
+/*
+  Regression case for the real "WC" furniture block found in the K.K.
+  Sharma reference DWG: a small, realistic fixture footprint (a
+  400x600mm rectangle) paired with an oversized decorative/clearance ARC
+  (radius 1000mm) whose actual angular sweep only grazes a corner of that
+  footprint. Before arcBoundingPoints (classify.ts) existed, ANY arc was
+  treated as a full circle for bbox purposes, so this same arc would have
+  inflated the block's measured size to ~2000x2000mm — this asserts the
+  fix keeps the measured size close to the real footprint instead.
+*/
+const oversizedArcBlockEntities = [
+  { type: "LWPOLYLINE", layer: "0", handle: 300, shape: true, vertices: [{ x: 0, y: 0 }, { x: 400, y: 0 }, { x: 400, y: 600 }, { x: 0, y: 600 }] },
+  // Center far below the footprint, radius large enough that a full-circle
+  // approximation would span y from -1800 to 200 and x from -800 to 1200 —
+  // but the real sweep (~84°-96°, i.e. nearly straight up) only reaches
+  // into the footprint's own y=0..600 range.
+  { type: "ARC", layer: "0", handle: 301, center: { x: 200, y: -800 }, radius: 1000, startAngle: 1.47, endAngle: 1.67 },
+];
+const oversizedArcDxf = {
+  header: {},
+  blocks: { WC_TEST: { name: "WC_TEST", entities: oversizedArcBlockEntities } },
+  entities: [{ type: "INSERT", layer: "A-FURN", handle: 302, name: "WC_TEST", position: { x: 5000, y: 5000 }, rotation: 0, xScale: 1, yScale: 1 }],
+} as unknown as IDxf;
+const oversizedArcResult = classifyDxf(oversizedArcDxf, 1);
+const wcFixture = oversizedArcResult.entities.find((e) => e.type === "furniture") as ClassifiedFurniture | undefined;
+check("oversized-arc fixture found and classified as furniture", !!wcFixture);
+check(
+  `oversized-arc fixture measured close to its real 400x600mm footprint, not inflated by the arc's full-circle bbox (got ${wcFixture?.widthMm}x${wcFixture?.depthMm})`,
+  !!wcFixture && wcFixture.widthMm <= 410 && wcFixture.depthMm <= 610
 );
 
 function check(label: string, ok: boolean) {

@@ -159,12 +159,15 @@ to Postgres so local dev and production share one code path and one set of migra
    signed in before streaming the object back, so nothing is ever served from a public bucket URL.
    (Local dev without these env vars will fail on first upload attempt, not at build time — see the
    comment at the top of `storage.ts`.)
-5. **DWG import goes through CloudConvert** (`src/lib/cloudconvert.ts`): the CAD-to-3D importer parses
-   DXF text directly, but DWG is a proprietary Autodesk binary format with no reliable open-source
-   parser, so a DWG upload is converted to DXF via CloudConvert's API first. Create a free account at
-   cloudconvert.com (no card required — 10 conversions/day free, paid tiers beyond that), generate an
-   API key (Dashboard → API → Keys), and set `CLOUDCONVERT_API_KEY` in Vercel. Without it, DXF uploads
-   still work; DWG uploads fail with a clear "not configured" error rather than a cryptic one.
+5. **DWG import is parsed locally, no third-party conversion** (`src/lib/dxf/dwg.ts`): the CAD-to-3D
+   importer parses DXF text directly, and DWG — Autodesk's proprietary binary format — is read
+   in-process via `@mlightcad/libredwg-web` (a WASM build of the open-source libredwg project), so a
+   DWG upload no longer round-trips through an external conversion API at all. No API key, no daily
+   quota, no outbound network call to fail. Note: `@mlightcad/libredwg-web` is GPL-3.0-licensed —
+   worth a licensing check with counsel if that matters for this codebase, though the common reading
+   is that GPL's copyleft triggers on distributing the combined work, and this only ever runs
+   server-side. DWF (Design Web Format) files are still rejected — no viable JS/WASM parser exists for
+   that format.
 6. **Storage tracking is built in** (`src/lib/storage-usage.ts`, `Settings → Storage` in the app):
    usage is summed from the app's own `files` table (not a separate R2 billing API call), shown
    against a configurable plan-size cap (defaults to R2's free 10GB), and owners/managers get an

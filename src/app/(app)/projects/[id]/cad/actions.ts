@@ -17,20 +17,10 @@ import { cadModels, cadEntities, cadMissingInputs, projects } from "@/db/schema"
 import { requireUser, requirePermission } from "@/lib/auth";
 import { recordAudit } from "@/lib/audit";
 import { PERMISSIONS } from "@/lib/rbac";
-import { registerUploadedFile, readStoredFile, createPresignedDownload } from "@/lib/storage";
-import { convertDwgToDxf } from "@/lib/cloudconvert";
+import { registerUploadedFile, readStoredFile } from "@/lib/storage";
 import { parseDxfFile, looksLikeDxf, type CadUnits, type UnitsResolution } from "@/lib/dxf";
+import { parseDwgBuffer } from "@/lib/dxf/dwg";
 import type { ClassificationResult, ClassifiedEntity } from "@/lib/dxf/classify";
-
-// Note on function duration: DWG uploads wait on a third-party conversion
-// (CloudConvert, see cloudconvert.ts) that can take up to a couple of
-// minutes. Next.js's "use server" files can only export async actions —
-// `maxDuration` can't be set here directly — so this relies on Vercel's
-// platform default (Fluid compute: 300s on Hobby, effectively fixed, not
-// configurable higher or lower) rather than an explicit override.
-// convertDwgToDxf() enforces its own ~4-minute timeout regardless, so a
-// slow conversion fails with a clear message well before Vercel would ever
-// kill the request outright.
 
 const FURNITURE_PLACEHOLDER_HEIGHT_MM = 750; // footprint-only mass (Phase 1 has no 3D furniture library yet) — never presented as a real furniture height
 
@@ -232,43 +222,36 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
     relatedEntityType: "cad_model",
   });
 
-  // Everything from here through parseDxfFile() can fail on a bad/foreign
-  // file or a broken DWG conversion (CloudConvert down, a rejected API key,
-  // an unsupported DWG version...). This used to only catch parseDxfFile()
-  // itself — a failure in the DWG conversion step above it (a real,
-  // reachable failure: see src/lib/cloudconvert.ts) was left to throw
-  // straight out of this Server Action uncaught. Next.js then reports that
-  // to the browser as a generic digested/minified error ("Minified React
-  // error #441") instead of ever showing the actual message — so from the
-  // user's side it looked like nothing was fixed even after the error text
-  // itself got better. One try/catch around the whole "turn the upload into
-  // usable DXF text" sequence means every failure in it — not just a parse
-  // failure — becomes a normal `status: "failed"` model with a readable
-  // `parseError`, the same graceful path a bad DXF file already took.
-  let text: string;
+  // Everything from here through parseDxfFile()/parseDwgBuffer() can fail
+  // on a bad/foreign file, an unsupported DWG version, or a drawing that
+  // just isn't a floor plan (see detectNonPlanDrawing in classify.ts). This
+  // used to only catch the DXF-text parse step — a failure earlier, in the
+  // (now-removed) CloudConvert conversion call, was left to throw straight
+  // out of this Server Action uncaught, which Next.js then reports to the
+  // browser as a generic digested/minified error ("Minified React error
+  // #441") instead of ever showing the real message. One try/catch around
+  // the whole "turn the upload into a classified model" sequence means
+  // every failure in it becomes a normal `status: "failed"` model with a
+  // readable `parseError`, whichever format the file was.
   let result: ClassificationResult;
   let unitsResolution: UnitsResolution;
   try {
     if (isDwg) {
-      // DWG is Autodesk's proprietary binary format — convert to DXF via
-      // CloudConvert first (see src/lib/cloudconvert.ts), then parse exactly
-      // the same way a native DXF upload would be. A short-lived presigned
-      // GET URL lets CloudConvert fetch the file directly from R2 without
-      // the bucket ever being made public.
-      const sourceUrl = await createPresignedDownload(fileKey);
-      text = await convertDwgToDxf({ sourceUrl, filename: fileOriginalName });
+      // DWG is Autodesk's proprietary binary format, but read directly here
+      // — no third-party conversion service, no API key, no network call.
+      // See src/lib/dxf/dwg.ts for how (and why dwg_write_dxf specifically
+      // is avoided) and its doc comment for the GPL-3.0 licensing note on
+      // the parser this uses.
+      const buffer = await readStoredFile(fileKey);
+      ({ result, unitsResolution } = await parseDwgBuffer(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer, units));
     } else {
       const buffer = await readStoredFile(fileKey);
-      text = buffer.toString("utf-8");
+      const text = buffer.toString("utf-8");
+      if (!looksLikeDxf(text)) {
+        throw new Error("This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG.");
+      }
+      ({ result, unitsResolution } = parseDxfFile(text, units));
     }
-    if (!looksLikeDxf(text)) {
-      throw new Error(
-        isDwg
-          ? "The converted file doesn't look like a valid DXF drawing — this DWG may use an unsupported version or feature. Try exporting it as DXF directly from AutoCAD instead."
-          : "This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG."
-      );
-    }
-    ({ result, unitsResolution } = parseDxfFile(text, units));
   } catch (err) {
     console.error("[cad] uploadCadModel failed:", err);
     const [model] = await db

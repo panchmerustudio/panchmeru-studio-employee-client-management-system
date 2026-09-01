@@ -222,6 +222,45 @@ function pairWallSegments(segments: WallSeg[]): ClassifiedWall[] {
   return walls;
 }
 
+/**
+ * True bounding-box corners of an arc's actual angular sweep, not a full
+ * circle around its center. A naive full-circle approximation (the old
+ * behavior here) badly over-measures any arc whose sweep is a small slice
+ * of its circle — found via a real furniture block ("WC") in a real DWG
+ * file that pairs a small toilet-outline polyline with an oversized
+ * decorative/clearance arc (radius ~1465 drawing units): treated as a full
+ * circle, that arc alone inflated the block's measured bbox from a
+ * realistic fixture size to 3+ meters wide. Angles are radians here,
+ * matching both dxf-parser's real ARC.startAngle/endAngle output (it
+ * converts DXF's raw degree group codes to radians on parse) and the DWG
+ * adapter's passthrough (see from-dwg.ts — unlike INSERT.rotation, DWG's
+ * raw ARC angles are already radians, so no conversion was needed there).
+ * Falls back to the old full-circle approximation when angle data is
+ * missing/invalid, so entities without real sweep info keep prior behavior.
+ */
+function arcBoundingPoints(center: Pt, radius: number, startAngle: number | undefined, endAngle: number | undefined): Pt[] {
+  if (startAngle == null || endAngle == null || !Number.isFinite(startAngle) || !Number.isFinite(endAngle)) {
+    return [
+      { x: center.x - radius, y: center.y - radius },
+      { x: center.x + radius, y: center.y + radius },
+    ];
+  }
+  const TWO_PI = Math.PI * 2;
+  const start = ((startAngle % TWO_PI) + TWO_PI) % TWO_PI;
+  let end = ((endAngle % TWO_PI) + TWO_PI) % TWO_PI;
+  if (end <= start) end += TWO_PI;
+  const pts: Pt[] = [
+    { x: center.x + radius * Math.cos(start), y: center.y + radius * Math.sin(start) },
+    { x: center.x + radius * Math.cos(end), y: center.y + radius * Math.sin(end) },
+  ];
+  for (const axis of [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2]) {
+    let a = axis;
+    while (a < start) a += TWO_PI;
+    if (a <= end) pts.push({ x: center.x + radius * Math.cos(a), y: center.y + radius * Math.sin(a) });
+  }
+  return pts;
+}
+
 function collectEntityPoints(e: IEntity, out: Pt[]) {
   switch (e.type) {
     case "LINE":
@@ -240,7 +279,7 @@ function collectEntityPoints(e: IEntity, out: Pt[]) {
     }
     case "ARC": {
       const a = e as IArcEntity & { center: { x: number; y: number }; radius: number };
-      if (a.center) out.push({ x: a.center.x - a.radius, y: a.center.y - a.radius }, { x: a.center.x + a.radius, y: a.center.y + a.radius });
+      if (a.center) out.push(...arcBoundingPoints(a.center, a.radius, a.startAngle, a.endAngle));
       break;
     }
     default:
