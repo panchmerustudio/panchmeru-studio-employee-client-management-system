@@ -14,13 +14,29 @@ const PRESETS: Record<string, number[]> = {
   wall_default_thickness: [100, 115, 150, 230, 300],
 };
 
-type PendingInput = { id: string; kind: string; question: string };
+export type MissingInputRowData = {
+  id: string;
+  kind: string;
+  question: string;
+  resolvedValueMm: number | null;
+  confirmed: boolean; // true once a person has explicitly set/confirmed this value; false = still unset, or set only by the automatic default
+};
 
-export function MissingInfoForm({ modelId, inputs, units }: { modelId: string; inputs: PendingInput[]; units: CadUnits }) {
+/**
+ * Two modes, same component: `blocking` (a genuinely-pending question,
+ * still gating this model's 3D generation — only reachable for models
+ * uploaded before defaults were auto-applied) vs. review (every
+ * measurement already has a value — automatic or person-confirmed — and
+ * this is just "here's what was assumed, change it if this drawing is
+ * different").
+ */
+export function MissingInfoForm({ modelId, inputs, units, blocking }: { modelId: string; inputs: MissingInputRowData[]; units: CadUnits; blocking: boolean }) {
   return (
     <div className="space-y-4">
       <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-        A plan-view CAD drawing doesn&apos;t contain this information — nothing here is guessed. Answer each question below to unlock 3D generation.
+        {blocking
+          ? "A plan-view CAD drawing doesn't contain this information — nothing here is guessed. Answer each question below to unlock 3D generation."
+          : "A plan-view CAD drawing doesn't contain these measurements, so the model below was built with common, sensible defaults — nothing here is guessed at random, and none of it blocked the 3D model from being generated. Review and change any of them if this drawing is different."}
         {units !== "mm" && ` Shown in ${unitSuffix(units)}, matching how this drawing was uploaded.`}
       </p>
       {inputs.map((input) => (
@@ -30,7 +46,7 @@ export function MissingInfoForm({ modelId, inputs, units }: { modelId: string; i
   );
 }
 
-function MissingInputRow({ modelId, input, units }: { modelId: string; input: PendingInput; units: CadUnits }) {
+function MissingInputRow({ modelId, input, units }: { modelId: string; input: MissingInputRowData; units: CadUnits }) {
   const [customOpen, setCustomOpen] = useState(false);
   const [customValue, setCustomValue] = useState("");
   const [pending, startTransition] = useTransition();
@@ -53,10 +69,18 @@ function MissingInputRow({ modelId, input, units }: { modelId: string; input: Pe
 
   return (
     <div className="card p-4">
-      <p className="mb-3 text-sm">{input.question}</p>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm">{input.question}</p>
+        {input.resolvedValueMm != null && (
+          <span className={`badge ${input.confirmed ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-700"}`}>
+            {input.confirmed ? "Confirmed: " : "Assumed: "}
+            {formatMm(input.resolvedValueMm, units)}
+          </span>
+        )}
+      </div>
       <div className="flex flex-wrap gap-2">
         {presets.map((p) => (
-          <button key={p} disabled={pending} onClick={() => submit(p)} className="btn btn-secondary">
+          <button key={p} disabled={pending} onClick={() => submit(p)} className={`btn ${p === input.resolvedValueMm ? "btn-primary" : "btn-secondary"}`}>
             {formatMm(p, units)}
           </button>
         ))}

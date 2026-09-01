@@ -59,6 +59,29 @@ const MAX_UNCLASSIFIED_STORED = 500;
 // an oddly-shaped plan while still catching content that's nowhere near it.
 const FOOTPRINT_OUTLIER_MARGIN_RATIO = 0.5;
 
+// Many real-world drawings (this codebase's own reference file among them)
+// never insert doors/windows as named BLOCKs at all — a drafter just draws
+// a swing arc + jamb line, or a couple of parallel glazing lines, straight
+// into the wall gap on a "door"/"window"-named layer. classifyInsert()
+// above only ever sees INSERT entities, so those raw strokes previously
+// fell through to "unclassified" — meaning no door/window object existed,
+// no gap ever got cut in the wall, and the wall rendered as one unbroken
+// slab exactly where an opening should be. extractOpeningSymbols() (below)
+// recovers these the same way a person reads the drawing: by finding
+// clusters of raw line/arc geometry on a door/window layer and measuring
+// how far each cluster spans along its nearest wall.
+// A door/window symbol's own strokes (jamb tick, swing arc, leaf line, or
+// a window's parallel mullion lines) are drawn touching or a few mm/cm
+// apart; the real gap to the NEXT opening is a wall's width away at
+// minimum — far bigger than this, so it safely merges one symbol's parts
+// without merging two separate openings.
+const OPENING_SYMBOL_CLUSTER_GAP_MM = 350;
+// Sanity bounds so a stray dimension/hatch line that happens to share a
+// door/window-named layer can't be misread as a 30mm or 30-meter "opening"
+// — real doors/windows the world over fall well inside this range.
+const MIN_OPENING_WIDTH_MM = 300;
+const MAX_OPENING_WIDTH_MM = 3000;
+
 const ANNOTATION_TYPES = new Set(["DIMENSION", "HATCH", "TEXT", "MTEXT", "POINT", "ATTDEF", "ATTRIB", "VIEWPORT"]);
 const GEOMETRIC_TYPES = new Set(["LINE", "LWPOLYLINE", "POLYLINE", "CIRCLE", "ARC", "SPLINE", "3DFACE", "SOLID", "ELLIPSE"]);
 
@@ -225,6 +248,136 @@ function collectEntityPoints(e: IEntity, out: Pt[]) {
   }
 }
 
+const OPENING_SYMBOL_ENTITY_TYPES = new Set(["LINE", "LWPOLYLINE", "POLYLINE", "ARC", "CIRCLE"]);
+
+/**
+ * Recovers door/window openings drawn as raw line/arc geometry on a
+ * door/window-named layer instead of as a BLOCK — see the module doc on
+ * OPENING_SYMBOL_CLUSTER_GAP_MM above for why this exists. `walls` must
+ * already be the same measurement-true wall list classifyDxf builds in
+ * step 1, since an opening's width/position here are measured directly
+ * against its host wall's own line, exactly like a real opening is always
+ * physically coplanar with its wall (the same principle the 3D builder
+ * uses to fix a door/window's rotation — see build-scene.ts's buildOpening
+ * doc). Consumes the entities it uses from `consumed` so they aren't also
+ * counted as generic unclassified geometry afterwards.
+ */
+function extractOpeningSymbols(entities: IEntity[], walls: ClassifiedWall[], scale: number, consumed: Set<IEntity>): ClassifiedEntity[] {
+  const candidates = entities.filter((e) => OPENING_SYMBOL_ENTITY_TYPES.has(e.type) && !consumed.has(e) && (DOOR_RE.test(e.layer ?? "") || WINDOW_RE.test(e.layer ?? "")));
+  if (candidates.length === 0 || walls.length === 0) return [];
+
+  const pointsByEntity = candidates.map((e) => {
+    const pts: Pt[] = [];
+    collectEntityPoints(e, pts);
+    return pts.map((p) => scalePt(p, scale));
+  });
+
+  // Union-find: any two candidate entities with a point pair closer than
+  // OPENING_SYMBOL_CLUSTER_GAP_MM are strokes of the same physical symbol.
+  const parent = candidates.map((_, i) => i);
+  function find(x: number): number {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  }
+  function union(a: number, b: number) {
+    const ra = find(a),
+      rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+  function anyClose(a: Pt[], b: Pt[]) {
+    for (const pa of a) for (const pb of b) if (dist(pa, pb) < OPENING_SYMBOL_CLUSTER_GAP_MM) return true;
+    return false;
+  }
+  for (let i = 0; i < candidates.length; i++) {
+    for (let j = i + 1; j < candidates.length; j++) {
+      if (anyClose(pointsByEntity[i], pointsByEntity[j])) union(i, j);
+    }
+  }
+  const groups = new Map<number, number[]>();
+  candidates.forEach((_, i) => {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r)!.push(i);
+  });
+
+  const openings: ClassifiedEntity[] = [];
+  for (const idxs of groups.values()) {
+    const groupEntities = idxs.map((i) => candidates[i]);
+    const groupPoints = idxs.flatMap((i) => pointsByEntity[i]);
+    if (groupPoints.length < 2) continue;
+
+    const cx = groupPoints.reduce((s, p) => s + p.x, 0) / groupPoints.length;
+    const cy = groupPoints.reduce((s, p) => s + p.y, 0) / groupPoints.length;
+    const centroid = { x: cx, y: cy };
+
+    let bestWall: ClassifiedWall | null = null;
+    let bestDist = Infinity;
+    for (const w of walls) {
+      const t = projectScalar(centroid, w.start, w.end);
+      if (t < -0.15 || t > 1.15) continue; // well outside this wall's own span
+      const d = pointToLineDistance(centroid, w.start, w.end);
+      if (d < bestDist) {
+        bestDist = d;
+        bestWall = w;
+      }
+    }
+    if (!bestWall) continue; // no nearby wall to host this — leave for the general unclassified pass
+    // Real hand-drawn symbols are rarely drawn perfectly on the wall's own
+    // centerline (sill ticks, swing-direction marks, and reveal lines
+    // routinely sit a further stroke or two off it) — generous enough to
+    // catch those without reaching across a room to a wall that isn't
+    // actually this opening's host.
+    if (bestDist > (bestWall.thicknessMm ?? 300) + 900) continue;
+
+    // Width = how far the symbol's own points spread ALONG the host wall's
+    // direction, clamped to the wall's own extent — not the cluster's raw
+    // bbox diagonal, which a door's swing arc would inflate well past the
+    // true opening width. Both ends are clamped into [0,1] BEFORE taking
+    // the difference (not clamped independently after Math.min/Math.max —
+    // that inverts the order into a bogus negative width whenever the
+    // whole cluster projects past one end of the wall) and the result is
+    // floored at 0 so a cluster that lands entirely off the wall's own
+    // span reads as "no width" and gets rejected by the sanity bounds
+    // below, not as a nonsensical negative one.
+    const wallLen = dist(bestWall.start, bestWall.end) || 1e-6;
+    const ts = groupPoints.map((p) => projectScalar(p, bestWall!.start, bestWall!.end));
+    const tMin = Math.min(1, Math.max(0, Math.min(...ts)));
+    const tMax = Math.min(1, Math.max(0, Math.max(...ts)));
+    const widthMm = Math.max(0, tMax - tMin) * wallLen;
+    if (widthMm < MIN_OPENING_WIDTH_MM || widthMm > MAX_OPENING_WIDTH_MM) continue;
+
+    const midT = (tMin + tMax) / 2;
+    const dx = bestWall.end.x - bestWall.start.x,
+      dy = bestWall.end.y - bestWall.start.y;
+    const position = { x: bestWall.start.x + dx * midT, y: bestWall.start.y + dy * midT };
+
+    // A swing arc is the near-universal AutoCAD convention for "this is a
+    // door" — far more reliable than the layer name alone (this file's own
+    // door/window layer is literally named "door and window"). Fall back
+    // to the layer name only when no arc is present (a typical window
+    // symbol: parallel glazing lines, no arc).
+    const hasArc = groupEntities.some((e) => e.type === "ARC" || e.type === "CIRCLE");
+    const layerName = groupEntities[0].layer ?? "";
+    const type: "door" | "window" = hasArc ? "door" : WINDOW_RE.test(layerName) ? "window" : "door";
+
+    for (const e of groupEntities) consumed.add(e);
+    openings.push({
+      type,
+      layerName,
+      handle: String(groupEntities[0].handle),
+      label: `drawn on "${layerName}"`,
+      position,
+      rotationDeg: 0,
+      widthMm: Math.round(widthMm),
+      depthMm: 50,
+    });
+  }
+  return openings;
+}
+
 /** Bounding box of a block's own local geometry, in the block's raw (un-normalized) drawing units — the insert's scale + our unit normalization are applied by the caller. */
 function blockLocalBBox(block: IBlock | undefined) {
   if (!block) return null;
@@ -359,9 +512,21 @@ export function classifyDxf(dxf: IDxf, scale: number): ClassificationResult {
     if ((ROOM_RE.test(e.layer ?? "") || STAIR_RE.test(e.layer ?? "")) && (e.type === "LWPOLYLINE" || e.type === "POLYLINE")) consumed.add(e);
   }
 
-  // 4. Doors/windows/columns/furniture — from CAD blocks only (see module doc).
   let hasDoors = false;
   let hasWindows = false;
+
+  // 3b. Doors/windows drawn as raw line/arc geometry (swing arc, jamb tick,
+  // parallel glazing lines) on a door/window-named layer instead of as a
+  // BLOCK — see extractOpeningSymbols' doc. Runs before the BLOCK-based
+  // pass below so a file that mixes both styles doesn't double-count.
+  const geometryOpenings = extractOpeningSymbols(entities, walls, scale, consumed);
+  for (const o of geometryOpenings) {
+    if (o.type === "door") hasDoors = true;
+    if (o.type === "window") hasWindows = true;
+    out.push(o);
+  }
+
+  // 4. Doors/windows/columns/furniture — from CAD blocks (see module doc).
   for (const e of entities) {
     if (e.type !== "INSERT") continue;
     consumed.add(e);

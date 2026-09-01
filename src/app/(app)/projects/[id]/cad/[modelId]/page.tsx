@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { cadModels, cadEntities, cadMissingInputs, users } from "@/db/schema";
 import { requireUser } from "@/lib/auth";
@@ -28,7 +28,9 @@ export default async function CadModelPage({ params }: { params: Promise<{ id: s
   if (!model || model.projectId !== id) notFound();
 
   const uploader = await db.query.users.findFirst({ where: eq(users.id, model.createdBy) });
-  const pendingInputs = await db.query.cadMissingInputs.findMany({ where: and(eq(cadMissingInputs.modelId, modelId), isNull(cadMissingInputs.resolvedValueMm)) });
+  const allMissingInputs = await db.query.cadMissingInputs.findMany({ where: eq(cadMissingInputs.modelId, modelId) });
+  const pendingInputs = allMissingInputs.filter((m) => m.resolvedValueMm == null);
+  const resolvedInputs = allMissingInputs.filter((m) => m.resolvedValueMm != null);
   const entities = model.status === "ready" || model.status === "approved" ? await db.query.cadEntities.findMany({ where: eq(cadEntities.modelId, modelId) }) : [];
 
   return (
@@ -74,9 +76,14 @@ export default async function CadModelPage({ params }: { params: Promise<{ id: s
         </SectionCard>
       )}
 
-      {model.status === "needs_info" && (
+      {model.status === "needs_info" && pendingInputs.length > 0 && (
         <SectionCard title="Missing information">
-          <MissingInfoForm modelId={modelId} inputs={pendingInputs.map((p) => ({ id: p.id, kind: p.kind, question: p.question }))} units={model.units} />
+          <MissingInfoForm
+            modelId={modelId}
+            inputs={pendingInputs.map((p) => ({ id: p.id, kind: p.kind, question: p.question, resolvedValueMm: p.resolvedValueMm, confirmed: p.resolvedBy != null }))}
+            units={model.units}
+            blocking={true}
+          />
         </SectionCard>
       )}
 
@@ -100,6 +107,17 @@ export default async function CadModelPage({ params }: { params: Promise<{ id: s
             canApprove={canApprove}
             canDownload={canDownload}
             status={model.status}
+          />
+        </SectionCard>
+      )}
+
+      {(model.status === "ready" || model.status === "approved") && resolvedInputs.length > 0 && (
+        <SectionCard title="Assumed measurements" action={<span className="text-xs text-muted">not in the plan-view drawing — review and change if this one&apos;s different</span>}>
+          <MissingInfoForm
+            modelId={modelId}
+            inputs={resolvedInputs.map((r) => ({ id: r.id, kind: r.kind, question: r.question, resolvedValueMm: r.resolvedValueMm, confirmed: r.resolvedBy != null }))}
+            units={model.units}
+            blocking={false}
           />
         </SectionCard>
       )}

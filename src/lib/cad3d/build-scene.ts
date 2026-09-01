@@ -33,8 +33,6 @@ export type ValidationRow = { id: string; type: string; label: string; dimension
 const MM = 1 / 1000; // Three scene units are meters; CAD data is millimeters
 const COLORS = {
   wall: 0xd8d2c4,
-  door: 0x8a5a35,
-  window: 0x7fb8d9,
   column: 0x888888,
   furniture: 0xb7a48c,
   stair: 0x9a9a9a,
@@ -196,7 +194,7 @@ function assignOpeningsToWalls(walls: WallInput[], openings: OpeningInput[]) {
   return byWall;
 }
 
-type BuiltWall = { group: THREE.Group; length: number; thickness: number; height: number };
+type BuiltWall = { group: THREE.Group; length: number; thickness: number; height: number; angleRad: number };
 
 function buildWall(wall: WallInput, openings: OpeningInput[], windowSillMm: number): BuiltWall {
   const group = new THREE.Group();
@@ -206,7 +204,7 @@ function buildWall(wall: WallInput, openings: OpeningInput[], windowSillMm: numb
   const length = Math.hypot(dx, dy);
   const fallbackThickness = wall.depthMm ?? 230;
   const fallbackHeight = wall.heightMm ?? 3000;
-  if (length < 1) return { group, length, thickness: fallbackThickness, height: fallbackHeight };
+  if (length < 1) return { group, length, thickness: fallbackThickness, height: fallbackHeight, angleRad: 0 };
   const angle = Math.atan2(dy, dx);
   const ux = dx / length,
     uy = dy / length;
@@ -257,29 +255,135 @@ function buildWall(wall: WallInput, openings: OpeningInput[], windowSillMm: numb
     mesh.userData = { cadEntityId: wall.id, cadType: "wall" };
     group.add(mesh);
   }
-  return { group, length, thickness, height: wallHeight };
+  return { group, length, thickness, height: wallHeight, angleRad: angle };
 }
 
-type BuiltOpening = { mesh: THREE.Mesh; width: number; height: number };
+type BuiltOpening = { object: THREE.Object3D; width: number; height: number };
 
-function buildOpening(o: OpeningInput, wallThicknessMm: number, windowSillMm: number): BuiltOpening {
+/**
+ * A proper door: two jambs + a lintel (light trim/casing) around a stained
+ * wood leaf with a raised panel and a handle — not a single flat-colored
+ * box. Built with its local origin at floor level / horizontal center, so
+ * the caller just positions+rotates the whole group like any other opening.
+ */
+function buildDoorGroup(widthMm: number, heightMm: number, wallThicknessMm: number): THREE.Group {
+  const g = new THREE.Group();
+  const w = Math.max(widthMm, 200) * MM;
+  const h = Math.max(heightMm, 200) * MM;
+  const wallT = Math.max(wallThicknessMm, 40) * MM;
+  const frameMat = furnMat(0xf0e6d2, 0.55, 0.04); // light casing/trim
+  const leafMat = furnMat(0x7a4a2a, 0.45, 0.04); // stained wood
+  const handleMat = new THREE.MeshStandardMaterial({ color: 0xd8b26a, roughness: 0.25, metalness: 0.75 });
+
+  const frameThick = Math.min(w * 0.07, 0.06);
+  for (const s of [-1, 1]) {
+    const jamb = new THREE.Mesh(new THREE.BoxGeometry(frameThick, h, wallT * 1.04), frameMat);
+    jamb.position.set(s * (w / 2 - frameThick / 2), h / 2, 0);
+    g.add(jamb);
+  }
+  const lintel = new THREE.Mesh(new THREE.BoxGeometry(w, frameThick, wallT * 1.04), frameMat);
+  lintel.position.set(0, h - frameThick / 2, 0);
+  g.add(lintel);
+
+  const leafW = Math.max(w - frameThick * 2 - 0.01, 0.05);
+  const leafH = Math.max(h - frameThick - 0.01, 0.05);
+  const leafDepth = Math.min(wallT * 0.5, 0.045);
+  const leaf = new THREE.Mesh(new THREE.BoxGeometry(leafW, leafH, leafDepth), leafMat);
+  leaf.position.set(0, leafH / 2, 0);
+  g.add(leaf);
+  // raised center panel — reads as "a door", not a flat slab, even from a distance
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(leafW * 0.72, leafH * 0.55, leafDepth * 1.6), leafMat);
+  panel.position.set(0, leafH * 0.56, 0);
+  g.add(panel);
+  const handle = new THREE.Mesh(new THREE.SphereGeometry(Math.min(0.03, leafW * 0.06), 10, 10), handleMat);
+  handle.position.set(leafW * 0.38, leafH * 0.45, leafDepth / 2 + 0.018);
+  g.add(handle);
+
+  return g;
+}
+
+/**
+ * A proper window: light-colored frame with a header/sill/two jambs, a
+ * tinted glass pane split by a cross-mullion, and a protruding sill ledge —
+ * not a single flat translucent box. Local origin sits at the sill (window
+ * bottom) / horizontal center, matching where the caller positions it.
+ */
+function buildWindowGroup(widthMm: number, heightMm: number, wallThicknessMm: number): THREE.Group {
+  const g = new THREE.Group();
+  const w = Math.max(widthMm, 200) * MM;
+  const h = Math.max(heightMm, 200) * MM;
+  const wallT = Math.max(wallThicknessMm, 40) * MM;
+  const frameMat = furnMat(0xf5f3ec, 0.5, 0.08); // white/uPVC-style frame
+  const glassMat = new THREE.MeshPhysicalMaterial({ color: 0xaed7ea, roughness: 0.05, metalness: 0.05, transparent: true, opacity: 0.4, transmission: 0.35 });
+  const sillMat = furnMat(0xe9e1cd, 0.6, 0.04);
+
+  const frameThick = Math.min(Math.min(w, h) * 0.08, 0.05) + 0.01;
+  for (const s of [-1, 1]) {
+    const jamb = new THREE.Mesh(new THREE.BoxGeometry(frameThick, h, wallT * 1.02), frameMat);
+    jamb.position.set(s * (w / 2 - frameThick / 2), h / 2, 0);
+    g.add(jamb);
+  }
+  const header = new THREE.Mesh(new THREE.BoxGeometry(w, frameThick, wallT * 1.02), frameMat);
+  header.position.set(0, h - frameThick / 2, 0);
+  g.add(header);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(w, frameThick, wallT * 1.02), frameMat);
+  base.position.set(0, frameThick / 2, 0);
+  g.add(base);
+
+  const paneW = Math.max(w - frameThick * 2, 0.05);
+  const paneH = Math.max(h - frameThick * 2, 0.05);
+  const paneDepth = Math.min(wallT * 0.22, 0.018);
+  const pane = new THREE.Mesh(new THREE.BoxGeometry(paneW, paneH, paneDepth), glassMat);
+  pane.position.set(0, h / 2, 0);
+  g.add(pane);
+  const mullionDepth = Math.min(wallT * 0.3, 0.025);
+  const vMullion = new THREE.Mesh(new THREE.BoxGeometry(Math.min(paneW * 0.07, 0.03), paneH, mullionDepth), frameMat);
+  vMullion.position.set(0, h / 2, 0);
+  g.add(vMullion);
+  const hMullion = new THREE.Mesh(new THREE.BoxGeometry(paneW, Math.min(paneH * 0.07, 0.03), mullionDepth), frameMat);
+  hMullion.position.set(0, h / 2, 0);
+  g.add(hMullion);
+
+  // sill ledge, protruding past the wall face — the single most recognizable "this is a window" cue
+  const sillDepth = wallT * 1.4;
+  const sillH = Math.min(h * 0.05, 0.035);
+  const sill = new THREE.Mesh(new THREE.BoxGeometry(w + frameThick * 1.6, sillH, sillDepth), sillMat);
+  sill.position.set(0, -sillH / 2, 0);
+  g.add(sill);
+
+  return g;
+}
+
+/**
+ * Door/window rotation MUST come from the host wall's own angle, not the
+ * block's own CAD rotationDeg. An opening is always physically coplanar
+ * with the wall it's cut into — but the INSERT's own rotation in the DXF
+ * reflects however that particular block happened to be drawn/mirrored,
+ * which is frequently NOT the same as the wall's run direction. Using it
+ * directly is what produced the reported "door renders as a diagonal
+ * slab, not fitted to the wall" bug: the wall gap was always cut correctly
+ * (buildWall works entirely in the wall's own frame), but the door/window
+ * mesh itself came out rotated to some unrelated angle, so it looked like
+ * a stray diagonal object slicing across the corner of the opening instead
+ * of neatly filling it. Deriving the rotation from the wall guarantees the
+ * opening is always flush, for any file, not just this one.
+ */
+function buildOpening(o: OpeningInput, wallThicknessMm: number, windowSillMm: number, wallAngleRad: number): BuiltOpening {
   const width = o.widthMm ?? 900;
-  const depth = Math.max(o.depthMm ?? 50, Math.min(wallThicknessMm, 250));
   const height = o.heightMm ?? (o.type === "door" ? 2100 : 1200);
   const zBottom = o.type === "window" ? windowSillMm : 0;
-  const mesh = box(width, depth, height, o.type === "door" ? COLORS.door : COLORS.window);
-  if (o.type === "window") {
-    const mat = mesh.material as THREE.MeshStandardMaterial;
-    mat.transparent = true;
-    mat.opacity = 0.55;
-  }
+  const object = o.type === "door" ? buildDoorGroup(width, height, wallThicknessMm) : buildWindowGroup(width, height, wallThicknessMm);
   const pos = o.geometry.position;
-  mesh.position.copy(toThree(pos.x, pos.y, zBottom + height / 2));
-  mesh.rotation.y = -((o.rotationDeg ?? 0) * Math.PI) / 180;
-  mesh.castShadow = o.type === "door";
-  mesh.receiveShadow = true;
-  mesh.userData = { cadEntityId: o.id, cadType: o.type };
-  return { mesh, width, height };
+  object.position.copy(toThree(pos.x, pos.y, zBottom));
+  object.rotation.y = -wallAngleRad;
+  object.traverse((c) => {
+    if (c instanceof THREE.Mesh) {
+      c.castShadow = o.type === "door";
+      c.receiveShadow = true;
+    }
+  });
+  object.userData = { cadEntityId: o.id, cadType: o.type };
+  return { object, width, height };
 }
 
 type BuiltPointMass = { object: THREE.Object3D; width: number; depth: number };
@@ -564,6 +668,117 @@ function buildFurniture(label: string, widthMm: number, depthMm: number, heightM
   return g;
 }
 
+/*
+  ---- Small floating text labels ----
+  "So anyone can easily judge where is the bed, kitchen, toilet" without
+  needing to recognize furniture silhouettes — a small always-camera-facing
+  tag drawn on a canvas and applied to a Sprite. Gated behind canUseCanvas()
+  for the same headless-Node-test reason as the wall/floor textures above.
+*/
+function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function makeLabelSprite(text: string, worldHeightM = 0.22): THREE.Sprite | null {
+  if (!canUseCanvas() || !text) return null;
+  const fontPx = 44;
+  const paddingX = 16;
+  const paddingY = 12;
+  const measure = document.createElement("canvas").getContext("2d")!;
+  measure.font = `700 ${fontPx}px system-ui, sans-serif`;
+  const textWidth = measure.measureText(text).width;
+  const c = document.createElement("canvas");
+  c.width = Math.ceil(textWidth + paddingX * 2);
+  c.height = fontPx + paddingY * 2;
+  const ctx = c.getContext("2d")!;
+  ctx.font = `700 ${fontPx}px system-ui, sans-serif`;
+  ctx.fillStyle = "rgba(24,22,18,0.78)";
+  roundRectPath(ctx, 0, 0, c.width, c.height, 10);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, c.width / 2, c.height / 2 + 2);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.renderOrder = 999; // always readable, never buried behind a wall/furniture mesh
+  const aspect = c.width / c.height;
+  sprite.scale.set(worldHeightM * aspect, worldHeightM, 1);
+  return sprite;
+}
+
+// Short, human-legible tags for the label sprite — deliberately finer-grained
+// than FURNITURE_KIND_PATTERNS (which only needs to pick a 3D shape): a
+// toilet and a wash basin get the same "sanitary" shape but should read as
+// different words on screen so a bathroom's fixtures are individually
+// identifiable, matching "where is the ... toilet" in the request.
+const FURNITURE_LABEL_OVERRIDES: [RegExp, string][] = [
+  [/\bwc\b|toilet|commode/i, "WC"],
+  [/wash\s*basin|\bbasin\b|\bsink\b/i, "BASIN"],
+  [/urinal/i, "URINAL"],
+  [/bidet/i, "BIDET"],
+  [/oven|\brange\b|stove|hob|cooktop/i, "STOVE"],
+  [/refrigerator|\bfridge\b/i, "FRIDGE"],
+  [/sofa|couch|settee/i, "SOFA"],
+  [/\bbed\b/i, "BED"],
+  [/dining/i, "DINING TABLE"],
+  [/\btable\b/i, "TABLE"],
+  [/\bdesk\b/i, "DESK"],
+  [/wardrobe|almirah|cupboard/i, "WARDROBE"],
+  [/cabinet/i, "CABINET"],
+  [/\bchair\b/i, "CHAIR"],
+  [/plant|planter/i, "PLANT"],
+];
+
+function furnitureLabelText(label: string | null | undefined): string {
+  const trimmed = (label ?? "").trim();
+  for (const [re, text] of FURNITURE_LABEL_OVERRIDES) if (re.test(trimmed)) return text;
+  // Fall back to the CAD block's own name if it's short and not internal
+  // AutoCAD bookkeeping (classify.ts already keeps those out of `furniture`
+  // entities, but stay defensive here too).
+  if (trimmed && trimmed.length <= 16 && !/^\*|^A\$C/i.test(trimmed)) return trimmed.toUpperCase();
+  const kind = furnitureKind(trimmed);
+  return kind ? kind.toUpperCase() : "FURNITURE";
+}
+
+/**
+ * A soft, semi-transparent color wash on the floor under a piece of
+ * furniture — a cheap, robust substitute for real room-by-room coloring
+ * (most real DXFs have no room-boundary polygons at all, see
+ * buildFloorSlab's doc, so there's no "bathroom polygon" to tint). Tinting
+ * the ground right under the fixture that DEFINES a room's use (a toilet,
+ * a bed, a stove) gives the same "glance at the plan and see which room is
+ * which" result without needing to know the room's actual outline.
+ * Restricted to the three kinds the request explicitly named — coloring
+ * every chair/table too would just be visual noise, not a clearer legend.
+ */
+const ZONE_TINT_BY_KIND: Record<string, number> = {
+  sanitary: 0x8ecbe6, // toilet/bathroom — blue
+  appliance: 0xf0c96b, // kitchen — warm yellow
+  bed: 0xe3a8c8, // bedroom — pink
+};
+
+function buildZoneTint(kind: string, widthMm: number, depthMm: number): THREE.Mesh | null {
+  const color = ZONE_TINT_BY_KIND[kind];
+  if (!color) return null;
+  const marginMm = 350;
+  const w = Math.max(widthMm + marginMm * 2, 400) * MM;
+  const d = Math.max(depthMm + marginMm * 2, 400) * MM;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.32, depthWrite: false }));
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.y = 0.006; // a hair above the floor slab to avoid z-fighting
+  mesh.renderOrder = 1;
+  return mesh;
+}
+
 function buildFlatPolygon(points: Pt[], heightMm: number, color: number): THREE.Mesh | null {
   if (points.length < 3) return null;
   const shape = new THREE.Shape(points.map((p) => new THREE.Vector2(p.x * MM, p.y * MM)));
@@ -572,6 +787,23 @@ function buildFlatPolygon(points: Pt[], heightMm: number, color: number): THREE.
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.95 }));
   mesh.receiveShadow = true;
   return mesh;
+}
+
+// Room polygons are rare in real DXFs (see buildFloorSlab's doc) but when a
+// ROOM/AREA layer with a legible name does exist, tint it and tag it
+// instead of the same flat beige every room got before — "colorful ...
+// where is the bed, kitchen, toilet" applies here too, not just furniture.
+const ROOM_TINTS: [RegExp, number][] = [
+  [/bed/i, 0xf1d9e6],
+  [/toilet|bath|wc|wash/i, 0xcfeaf5],
+  [/kitchen/i, 0xf8e6b8],
+  [/living|lounge|drawing/i, 0xdcefd4],
+  [/dining/i, 0xeee0cf],
+  [/stair/i, 0xe2ded4],
+];
+function roomColor(label: string): number {
+  for (const [re, color] of ROOM_TINTS) if (re.test(label)) return color;
+  return COLORS.room;
 }
 
 /**
@@ -782,10 +1014,12 @@ export function buildScene(
     The existing test fixture in scripts/test-cad3d-build.ts only used
     axis-aligned walls, which is why this never failed there.
   */
+  const wallAngles: number[] = [];
   walls.forEach((w, i) => {
     const wallOpenings = byWall.get(i) ?? [];
     const built = buildWall(w, wallOpenings, opts.windowSillMm);
     group.add(built.group);
+    wallAngles[i] = built.angleRad;
     validation.push({ id: w.id, type: "wall", label: `Wall (${w.layerName ?? ""})`, dimension: "length", cadValue: Math.round(built.length), modelValue: Math.round(built.length) });
     if (w.depthMm) validation.push({ id: w.id, type: "wall", label: `Wall (${w.layerName ?? ""})`, dimension: "thickness", cadValue: Math.round(w.depthMm), modelValue: Math.round(built.thickness) });
     if (w.heightMm) validation.push({ id: w.id, type: "wall", label: `Wall (${w.layerName ?? ""})`, dimension: "height", cadValue: Math.round(w.heightMm), modelValue: Math.round(built.height) });
@@ -793,9 +1027,10 @@ export function buildScene(
 
   for (const [wallIdx, wallOpenings] of byWall) {
     const wallThickness = walls[wallIdx]?.depthMm ?? 230;
+    const wallAngle = wallAngles[wallIdx] ?? 0;
     for (const o of wallOpenings) {
-      const built = buildOpening(o, wallThickness, opts.windowSillMm);
-      group.add(built.mesh);
+      const built = buildOpening(o, wallThickness, opts.windowSillMm, wallAngle);
+      group.add(built.object);
       const label = `${o.type === "door" ? "Door" : "Window"} ${o.label ?? ""}`.trim();
       if (o.widthMm) validation.push({ id: o.id, type: o.type, label, dimension: "width", cadValue: Math.round(o.widthMm), modelValue: Math.round(built.width) });
       if (o.heightMm) validation.push({ id: o.id, type: o.type, label, dimension: "height", cadValue: Math.round(o.heightMm), modelValue: Math.round(built.height) });
@@ -811,13 +1046,34 @@ export function buildScene(
       const label = `${e.type === "column" ? "Column" : "Furniture"} ${e.label ?? ""}`.trim();
       if (e.widthMm) validation.push({ id: e.id, type: e.type, label, dimension: "width", cadValue: Math.round(e.widthMm), modelValue: Math.round(built.width) });
       if (e.depthMm) validation.push({ id: e.id, type: e.type, label, dimension: "depth", cadValue: Math.round(e.depthMm), modelValue: Math.round(built.depth) });
+      if (e.type === "furniture") {
+        const height = e.heightMm || furnitureDefaultHeightMm(e.label ?? "");
+        const tag = makeLabelSprite(furnitureLabelText(e.label));
+        if (tag) {
+          tag.position.set(0, height * MM + 0.14, 0);
+          built.object.add(tag);
+        }
+        const kind = furnitureKind(e.label ?? "");
+        const zoneTint = kind ? buildZoneTint(kind, built.width, built.depth) : null;
+        if (zoneTint) built.object.add(zoneTint);
+      }
     } else if (e.type === "room") {
       const geo = e.geometry as { points?: Pt[] };
       if (!geo.points) continue;
-      const mesh = buildFlatPolygon(geo.points, 20, COLORS.room);
+      const label = e.label ?? "";
+      const mesh = buildFlatPolygon(geo.points, 20, roomColor(label));
       if (!mesh) continue;
       mesh.userData = { cadEntityId: e.id, cadType: "room" };
       group.add(mesh);
+      if (label) {
+        const cx = geo.points.reduce((s, p) => s + p.x, 0) / geo.points.length;
+        const cy = geo.points.reduce((s, p) => s + p.y, 0) / geo.points.length;
+        const tag = makeLabelSprite(label.toUpperCase(), 0.32);
+        if (tag) {
+          tag.position.copy(toThree(cx, cy, 1500));
+          group.add(tag);
+        }
+      }
     } else if (e.type === "stair") {
       const geo = e.geometry as { points?: Pt[] };
       if (!geo.points) continue;

@@ -92,6 +92,31 @@ const dxf = {
     // modelspace. Should be excluded from furniture, not scattered into
     // the 3D scene far from the building.
     { type: "INSERT", layer: "A-FURN", handle: 53, name: "DESK_1800", position: { x: 90000, y: 90000 }, rotation: 0, xScale: 1, yScale: 1 },
+
+    // Regression case: a door drawn as raw LINE geometry (no BLOCK at all)
+    // on a door-named layer, near the south wall around x=3300-4200 —
+    // simulating the very common real-world case (this app's own reference
+    // file among them) where a drafter draws the jamb tick + leaf directly
+    // instead of inserting a block. No ARC here, so classification must
+    // fall back to the (unambiguous) "A-DOOR" layer name.
+    { type: "LINE", layer: "A-DOOR", handle: 60, vertices: [{ x: 3300, y: -T }, { x: 3300, y: T }] },
+    { type: "LINE", layer: "A-DOOR", handle: 61, vertices: [{ x: 3300, y: 0 }, { x: 4200, y: 0 }] },
+
+    // Regression case: a window drawn as two raw parallel LINEs (no arc,
+    // no block) on a window-named layer, near the west wall between
+    // y=1200 and y=2400.
+    { type: "LINE", layer: "A-WINDOW", handle: 62, vertices: [{ x: 0, y: 1200 }, { x: 0, y: 2400 }] },
+    { type: "LINE", layer: "A-WINDOW", handle: 63, vertices: [{ x: 34.5, y: 1200 }, { x: 34.5, y: 2400 }] },
+
+    // Regression case: a door swing ARC on an AMBIGUOUS layer literally
+    // named "door and window" (this app's own reference file has exactly
+    // this layer name) — the arc's presence must win over the ambiguous
+    // layer name and classify this as a door, not a window.
+    { type: "ARC", layer: "door and window", handle: 64, center: { x: 600, y: 0 }, radius: 450, startAngle: 0, endAngle: 90 },
+    // Jamb tick touching the arc's own (approximated) bounding-box corner —
+    // real touching strokes, not two unrelated marks — so this exercises
+    // the actual clustering path rather than the arc alone.
+    { type: "LINE", layer: "door and window", handle: 65, vertices: [{ x: 1050, y: 400 }, { x: 1050, y: 500 }] },
   ],
 } as unknown as IDxf;
 
@@ -151,6 +176,17 @@ check("far-away DESK_1800 (90000,90000) excluded from furniture", !result.entiti
 check("far-away block surfaces as unclassified (footprint outlier)", result.entities.some((e) => e.type === "unclassified" && e.label.includes("far outside the building's walls")));
 // The real, in-place desk (2000,500) must still come through untouched.
 check("in-footprint desk still classified as furniture", !!desk);
+
+// Doors/windows drawn as raw line/arc geometry (no BLOCK) on a
+// door/window-named layer — see extractOpeningSymbols in classify.ts.
+const openings = result.entities.filter((e) => e.type === "door" || e.type === "window") as ClassifiedOpening[];
+const geometryDoor = openings.find((o) => o.type === "door" && Math.abs(o.widthMm - 900) < 5 && o.label.includes("A-DOOR"));
+check("raw-geometry door (no block) found on A-DOOR layer, ~900mm wide", !!geometryDoor);
+const geometryWindow = openings.find((o) => o.type === "window" && Math.abs(o.widthMm - 1200) < 5 && o.label.includes("A-WINDOW"));
+check("raw-geometry window (no block, no arc) found on A-WINDOW layer, ~1200mm wide", !!geometryWindow);
+const ambiguousLayerDoor = openings.find((o) => o.type === "door" && o.label.includes("door and window"));
+check('ARC on ambiguous "door and window" layer classified as door (arc wins over layer-name ambiguity)', !!ambiguousLayerDoor);
+check('nothing on the ambiguous "door and window" layer misclassified as a window', !openings.some((o) => o.type === "window" && o.label.includes("door and window")));
 
 function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);

@@ -11,7 +11,7 @@
  */
 
 import { revalidatePath } from "next/cache";
-import { eq, and, inArray, isNull } from "drizzle-orm";
+import { eq, and, inArray, isNull, or } from "drizzle-orm";
 import { db } from "@/db/client";
 import { cadModels, cadEntities, cadMissingInputs, projects } from "@/db/schema";
 import { requireUser, requirePermission } from "@/lib/auth";
@@ -51,6 +51,65 @@ function buildMissingInputs(result: ClassificationResult): MissingInputSpec[] {
     specs.push({ kind: "window_sill_height", question: "What is the window sill height (window bottom above floor)?" });
   }
   return specs;
+}
+
+// Sensible, commonly-correct construction defaults — applied automatically
+// at upload so a person is never BLOCKED on answering these before seeing
+// a 3D model ("it should be optional for a human whether he wants to enter
+// dimensions or not"). Every one of these stays visible and editable
+// afterwards on the model page ("Assumed measurements") — nothing here is
+// hidden or treated as final, it's just no longer a gate. Ordinary
+// residential practice: ~9'10"/3.0m floor height, 7'/2.1m door, 4'/1.2m
+// window, 3'/0.9m sill, 9in/230mm brick wall.
+const DEFAULT_MM: Record<MissingInputSpec["kind"], number> = {
+  floor_height: 3000,
+  door_height: 2100,
+  window_height: 1200,
+  window_sill_height: 900,
+  wall_default_thickness: 230,
+};
+
+/**
+ * Applies one resolved measurement to the model row + its cadEntities rows
+ * — shared by the automatic-default pass at upload time and by a person
+ * changing a value afterwards through resolveMissingInput, so both paths
+ * stay in sync and a later manual edit re-applies correctly. For
+ * wall_default_thickness specifically, re-applying a CHANGED default must
+ * only touch walls that got the PREVIOUS default, not ones with a real
+ * measured thickness — matching on the model's previous
+ * wallDefaultThicknessMm value (in addition to NULL, for the very first
+ * apply) does that without needing a schema column to mark "this was a
+ * guess, not a measurement."
+ */
+async function applyMissingInputValue(modelId: string, kind: MissingInputSpec["kind"], valueMm: number) {
+  switch (kind) {
+    case "floor_height":
+      await db.update(cadModels).set({ floorHeightMm: valueMm }).where(eq(cadModels.id, modelId));
+      await db
+        .update(cadEntities)
+        .set({ heightMm: valueMm })
+        .where(and(eq(cadEntities.modelId, modelId), inArray(cadEntities.type, ["wall", "column", "stair"])));
+      break;
+    case "door_height":
+      await db.update(cadModels).set({ doorHeightMm: valueMm }).where(eq(cadModels.id, modelId));
+      await db.update(cadEntities).set({ heightMm: valueMm }).where(and(eq(cadEntities.modelId, modelId), eq(cadEntities.type, "door")));
+      break;
+    case "window_height":
+      await db.update(cadModels).set({ windowHeightMm: valueMm }).where(eq(cadModels.id, modelId));
+      await db.update(cadEntities).set({ heightMm: valueMm }).where(and(eq(cadEntities.modelId, modelId), eq(cadEntities.type, "window")));
+      break;
+    case "window_sill_height":
+      await db.update(cadModels).set({ windowSillMm: valueMm }).where(eq(cadModels.id, modelId));
+      break;
+    case "wall_default_thickness": {
+      const model = await db.query.cadModels.findFirst({ where: eq(cadModels.id, modelId) });
+      const previousDefault = model?.wallDefaultThicknessMm ?? null;
+      await db.update(cadModels).set({ wallDefaultThicknessMm: valueMm }).where(eq(cadModels.id, modelId));
+      const wallMatch = previousDefault != null ? or(isNull(cadEntities.depthMm), eq(cadEntities.depthMm, previousDefault)) : isNull(cadEntities.depthMm);
+      await db.update(cadEntities).set({ depthMm: valueMm }).where(and(eq(cadEntities.modelId, modelId), eq(cadEntities.type, "wall"), wallMatch));
+      break;
+    }
+  }
 }
 
 function entityToRow(modelId: string, e: ClassifiedEntity) {
@@ -220,6 +279,12 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
   const unitsOverridden = unitsResolution.source === "file";
   const displayName = unitsOverridden ? `${name} (units auto-corrected: ${unitsResolution.requested} → ${unitsResolution.effective})` : name;
 
+  // "Needs info" no longer blocks 3D generation — see DEFAULT_MM/
+  // applyMissingInputValue above. The model goes straight to "ready" and
+  // every measurement a plan-view drawing can't contain gets a sensible,
+  // commonly-correct default applied automatically; a person can still
+  // review and change any of them afterwards from the model page, they
+  // just never have to before seeing a model.
   const missingSpecs = buildMissingInputs(result);
   const [model] = await db
     .insert(cadModels)
@@ -228,7 +293,7 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
       name: displayName,
       sourceFileId: savedFile.id,
       units: unitsResolution.effective,
-      status: missingSpecs.length > 0 ? "needs_info" : "ready",
+      status: "ready",
       entityCounts: result.entityCounts,
       unclassifiedCount: result.unclassifiedCount,
       ignoredAnnotationCount: result.ignoredAnnotationCount,
@@ -240,7 +305,10 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
     await db.insert(cadEntities).values(result.entities.map((e) => entityToRow(model.id, e)));
   }
   if (missingSpecs.length > 0) {
-    await db.insert(cadMissingInputs).values(missingSpecs.map((s) => ({ modelId: model.id, kind: s.kind, question: s.question })));
+    for (const s of missingSpecs) await applyMissingInputValue(model.id, s.kind, DEFAULT_MM[s.kind]);
+    await db.insert(cadMissingInputs).values(
+      missingSpecs.map((s) => ({ modelId: model.id, kind: s.kind, question: s.question, resolvedValueMm: DEFAULT_MM[s.kind], resolvedAt: new Date() }))
+    );
   }
 
   await recordAudit({
@@ -248,7 +316,12 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
     action: "cad.uploaded",
     entityType: "cad_model",
     entityId: model.id,
-    newState: { entityCounts: result.entityCounts, unclassifiedCount: result.unclassifiedCount, unitsResolution },
+    newState: {
+      entityCounts: result.entityCounts,
+      unclassifiedCount: result.unclassifiedCount,
+      unitsResolution,
+      autoAssumedDefaults: Object.fromEntries(missingSpecs.map((s) => [s.kind, DEFAULT_MM[s.kind]])),
+    },
   });
   revalidatePath(`/projects/${projectId}/cad`);
   return model;
@@ -263,38 +336,15 @@ export async function resolveMissingInput(modelId: string, inputId: string, valu
   const input = await db.query.cadMissingInputs.findFirst({ where: and(eq(cadMissingInputs.id, inputId), eq(cadMissingInputs.modelId, modelId)) });
   if (!input) throw new Error("Question not found.");
 
+  // A person confirming or overriding a value (resolvedBy set to their own
+  // id) is distinct from the automatic default applied at upload
+  // (resolvedBy left null, see uploadCadModel) — the model page uses that
+  // difference to show "Assumed" vs "Confirmed".
   await db.update(cadMissingInputs).set({ resolvedValueMm: valueMm, resolvedBy: actor.id, resolvedAt: new Date() }).where(eq(cadMissingInputs.id, inputId));
-
-  switch (input.kind) {
-    case "floor_height":
-      await db.update(cadModels).set({ floorHeightMm: valueMm }).where(eq(cadModels.id, modelId));
-      await db
-        .update(cadEntities)
-        .set({ heightMm: valueMm })
-        .where(and(eq(cadEntities.modelId, modelId), inArray(cadEntities.type, ["wall", "column", "stair"])));
-      break;
-    case "door_height":
-      await db.update(cadModels).set({ doorHeightMm: valueMm }).where(eq(cadModels.id, modelId));
-      await db.update(cadEntities).set({ heightMm: valueMm }).where(and(eq(cadEntities.modelId, modelId), eq(cadEntities.type, "door")));
-      break;
-    case "window_height":
-      await db.update(cadModels).set({ windowHeightMm: valueMm }).where(eq(cadModels.id, modelId));
-      await db.update(cadEntities).set({ heightMm: valueMm }).where(and(eq(cadEntities.modelId, modelId), eq(cadEntities.type, "window")));
-      break;
-    case "window_sill_height":
-      await db.update(cadModels).set({ windowSillMm: valueMm }).where(eq(cadModels.id, modelId));
-      break;
-    case "wall_default_thickness":
-      await db.update(cadModels).set({ wallDefaultThicknessMm: valueMm }).where(eq(cadModels.id, modelId));
-      await db
-        .update(cadEntities)
-        .set({ depthMm: valueMm })
-        .where(and(eq(cadEntities.modelId, modelId), eq(cadEntities.type, "wall"), isNull(cadEntities.depthMm)));
-      break;
-  }
+  await applyMissingInputValue(modelId, input.kind, valueMm);
 
   const stillPending = await db.query.cadMissingInputs.findFirst({ where: and(eq(cadMissingInputs.modelId, modelId), isNull(cadMissingInputs.resolvedValueMm)) });
-  if (!stillPending) {
+  if (!stillPending && model.status === "needs_info") {
     await db.update(cadModels).set({ status: "ready" }).where(eq(cadModels.id, modelId));
   }
 
