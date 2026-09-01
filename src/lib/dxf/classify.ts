@@ -591,3 +591,41 @@ export function classifyDxf(dxf: IDxf, scale: number): ClassificationResult {
     hasWindows,
   };
 }
+
+/*
+  ---- Drawing-type sanity check: floor plan vs. elevation/section ----
+  Everything above only knows how to build 3D from a PLAN-VIEW floor
+  layout — walls seen from directly above, with doors/windows cut into
+  them. An elevation (a front-on view of a facade) or a section (a
+  vertical cut-through) uses completely different drafting conventions —
+  no walkable wall network at all, just outlines and hatching — and
+  forcing one through the plan-view classifier above wouldn't produce a
+  wrong model, it'd produce an empty or near-empty one with no obvious
+  explanation why. Real architectural sheets conventionally title each
+  view with a large TEXT/MTEXT label near it ("FRONT ELEVATION",
+  "SECTION A-A", ...) — that's a reliable signal, but only paired with
+  confirming the plan-view classifier above found essentially no usable
+  wall structure. A sheet that has BOTH a floor plan and, say, a small
+  elevation inset always keeps being modeled normally, because the
+  wall-count half of this check won't fire — this only ever blocks a
+  sheet that's actually unusable as-is, never one that merely mentions
+  "elevation" somewhere on it.
+*/
+const ELEVATION_OR_SECTION_TITLE_RE = /\belevations?\b|\bsection\s+[a-z]\s*[-–—]\s*[a-z]\b|\bcross[\s-]section\b/i;
+const MIN_WALLS_FOR_PLAN_VIEW = 2;
+
+export function detectNonPlanDrawing(dxf: IDxf, result: ClassificationResult): string | null {
+  if ((result.entityCounts.wall ?? 0) >= MIN_WALLS_FOR_PLAN_VIEW) return null; // real plan-view wall structure was found — model it, whatever else is on the sheet
+
+  for (const e of dxf.entities ?? []) {
+    let raw: string | undefined;
+    if (e.type === "TEXT") raw = (e as ITextEntity).text;
+    else if (e.type === "MTEXT") raw = (e as IMtextEntity).text;
+    if (!raw) continue;
+    const clean = raw.replace(/\\P/g, " ").trim();
+    if (ELEVATION_OR_SECTION_TITLE_RE.test(clean)) {
+      return `This looks like an elevation or section drawing ("${clean}"), not a floor plan — no usable wall layout was found on it. The 3D modeler builds from a plan-view floor layout (walls, doors, and windows seen from directly above); upload that drawing instead, or export just the floor plan sheet as its own DXF.`;
+    }
+  }
+  return null;
+}

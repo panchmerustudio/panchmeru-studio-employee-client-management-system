@@ -4,7 +4,7 @@
  * which is dxf-parser's own well-tested job — the real risk here is our
  * classification/geometry logic). Run with: npx tsx scripts/test-cad-classify.ts
  */
-import { classifyDxf, type ClassifiedOpening, type ClassifiedFurniture } from "../src/lib/dxf/classify";
+import { classifyDxf, detectNonPlanDrawing, type ClassifiedOpening, type ClassifiedFurniture } from "../src/lib/dxf/classify";
 import type { IDxf } from "dxf-parser";
 
 function rectBlockEntities(w: number, h: number) {
@@ -187,6 +187,51 @@ check("raw-geometry window (no block, no arc) found on A-WINDOW layer, ~1200mm w
 const ambiguousLayerDoor = openings.find((o) => o.type === "door" && o.label.includes("door and window"));
 check('ARC on ambiguous "door and window" layer classified as door (arc wins over layer-name ambiguity)', !!ambiguousLayerDoor);
 check('nothing on the ambiguous "door and window" layer misclassified as a window', !openings.some((o) => o.type === "window" && o.label.includes("door and window")));
+
+/*
+  Regression case for "it should be able to recognize the type of drawing
+  and work accordingly" — see detectNonPlanDrawing's doc in classify.ts.
+  An elevation/section sheet (a titled TEXT/MTEXT, essentially no wall
+  structure) should be flagged instead of silently producing an empty
+  model; a sheet that has BOTH real plan-view walls and an elevation-titled
+  inset must NOT be flagged, since it has usable floor-plan geometry.
+*/
+const elevationOnlyDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    { type: "LINE", layer: "A-ELEV", handle: 200, vertices: [{ x: 0, y: 0 }, { x: 8000, y: 0 }] },
+    { type: "LINE", layer: "A-ELEV", handle: 201, vertices: [{ x: 0, y: 3000 }, { x: 8000, y: 3000 }] },
+    { type: "MTEXT", layer: "A-TEXT", handle: 202, text: "FRONT ELEVATION", position: { x: 4000, y: -500 } },
+  ],
+} as unknown as IDxf;
+const elevationOnlyResult = classifyDxf(elevationOnlyDxf, 1);
+check("wall-less sheet titled FRONT ELEVATION -> flagged as not a floor plan", !!detectNonPlanDrawing(elevationOnlyDxf, elevationOnlyResult) && detectNonPlanDrawing(elevationOnlyDxf, elevationOnlyResult)!.includes("elevation"));
+
+const sectionOnlyDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    { type: "LINE", layer: "0", handle: 210, vertices: [{ x: 0, y: 0 }, { x: 5000, y: 0 }] },
+    { type: "TEXT", layer: "A-TEXT", handle: 211, text: "SECTION A-A", startPoint: { x: 2000, y: -300 } },
+  ],
+} as unknown as IDxf;
+const sectionOnlyResult = classifyDxf(sectionOnlyDxf, 1);
+check("wall-less sheet titled SECTION A-A -> flagged as not a floor plan", !!detectNonPlanDrawing(sectionOnlyDxf, sectionOnlyResult));
+
+// This test file's own main `dxf` fixture above IS a real floor plan (has
+// walls, a door, a window, ...) — detectNonPlanDrawing must never flag it,
+// with or without an elevation-titled inset added alongside the real plan.
+check("a real floor plan (this file's main fixture) is never flagged as non-plan", detectNonPlanDrawing(dxf, result) === null);
+const planWithElevationInsetDxf = {
+  ...dxf,
+  entities: [...(dxf.entities ?? []), { type: "MTEXT", layer: "A-TEXT", handle: 220, text: "KITCHEN ELEVATION", position: { x: 100000, y: 100000 } }],
+} as unknown as IDxf;
+const planWithInsetResult = classifyDxf(planWithElevationInsetDxf, 1);
+check(
+  "a real floor plan with an elevation-titled inset elsewhere on the sheet is still NOT flagged (it has usable wall geometry)",
+  detectNonPlanDrawing(planWithElevationInsetDxf, planWithInsetResult) === null
+);
 
 function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);

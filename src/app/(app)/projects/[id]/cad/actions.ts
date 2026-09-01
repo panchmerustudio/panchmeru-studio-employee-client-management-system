@@ -232,35 +232,48 @@ export async function uploadCadModel(projectId: string, formData: FormData) {
     relatedEntityType: "cad_model",
   });
 
+  // Everything from here through parseDxfFile() can fail on a bad/foreign
+  // file or a broken DWG conversion (CloudConvert down, a rejected API key,
+  // an unsupported DWG version...). This used to only catch parseDxfFile()
+  // itself — a failure in the DWG conversion step above it (a real,
+  // reachable failure: see src/lib/cloudconvert.ts) was left to throw
+  // straight out of this Server Action uncaught. Next.js then reports that
+  // to the browser as a generic digested/minified error ("Minified React
+  // error #441") instead of ever showing the actual message — so from the
+  // user's side it looked like nothing was fixed even after the error text
+  // itself got better. One try/catch around the whole "turn the upload into
+  // usable DXF text" sequence means every failure in it — not just a parse
+  // failure — becomes a normal `status: "failed"` model with a readable
+  // `parseError`, the same graceful path a bad DXF file already took.
   let text: string;
-  if (isDwg) {
-    // DWG is Autodesk's proprietary binary format — convert to DXF via
-    // CloudConvert first (see src/lib/cloudconvert.ts), then parse exactly
-    // the same way a native DXF upload would be. A short-lived presigned
-    // GET URL lets CloudConvert fetch the file directly from R2 without the
-    // bucket ever being made public.
-    const sourceUrl = await createPresignedDownload(fileKey);
-    text = await convertDwgToDxf({ sourceUrl, filename: fileOriginalName });
-  } else {
-    const buffer = await readStoredFile(fileKey);
-    text = buffer.toString("utf-8");
-  }
-  if (!looksLikeDxf(text)) {
-    throw new Error(
-      isDwg
-        ? "The converted file doesn't look like a valid DXF drawing — this DWG may use an unsupported version or feature. Try exporting it as DXF directly from AutoCAD instead."
-        : "This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG."
-    );
-  }
-
   let result: ClassificationResult;
   let unitsResolution: UnitsResolution;
   try {
+    if (isDwg) {
+      // DWG is Autodesk's proprietary binary format — convert to DXF via
+      // CloudConvert first (see src/lib/cloudconvert.ts), then parse exactly
+      // the same way a native DXF upload would be. A short-lived presigned
+      // GET URL lets CloudConvert fetch the file directly from R2 without
+      // the bucket ever being made public.
+      const sourceUrl = await createPresignedDownload(fileKey);
+      text = await convertDwgToDxf({ sourceUrl, filename: fileOriginalName });
+    } else {
+      const buffer = await readStoredFile(fileKey);
+      text = buffer.toString("utf-8");
+    }
+    if (!looksLikeDxf(text)) {
+      throw new Error(
+        isDwg
+          ? "The converted file doesn't look like a valid DXF drawing — this DWG may use an unsupported version or feature. Try exporting it as DXF directly from AutoCAD instead."
+          : "This doesn't look like a valid DXF file. Make sure it was exported as DXF, not DWG."
+      );
+    }
     ({ result, unitsResolution } = parseDxfFile(text, units));
   } catch (err) {
+    console.error("[cad] uploadCadModel failed:", err);
     const [model] = await db
       .insert(cadModels)
-      .values({ projectId, name, sourceFileId: savedFile.id, units, status: "failed", parseError: err instanceof Error ? err.message : "Couldn't parse this DXF file.", createdBy: actor.id })
+      .values({ projectId, name, sourceFileId: savedFile.id, units, status: "failed", parseError: err instanceof Error ? err.message : "Couldn't read this file.", createdBy: actor.id })
       .returning();
     await recordAudit({ actor, action: "cad.upload_failed", entityType: "cad_model", entityId: model.id, newState: { error: model.parseError } });
     revalidatePath(`/projects/${projectId}/cad`);

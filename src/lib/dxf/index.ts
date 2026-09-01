@@ -1,6 +1,6 @@
 import "server-only";
 import DxfParser from "dxf-parser";
-import { classifyDxf, type ClassificationResult } from "./classify";
+import { classifyDxf, detectNonPlanDrawing, type ClassificationResult } from "./classify";
 import { resolveUnits, UNIT_TO_MM, type CadUnits, type UnitsResolution } from "./units";
 
 export function parseDxfFile(dxfText: string, units: CadUnits): { result: ClassificationResult; unitsResolution: UnitsResolution } {
@@ -9,6 +9,12 @@ export function parseDxfFile(dxfText: string, units: CadUnits): { result: Classi
   if (!dxf) throw new Error("Couldn't read this file as DXF — make sure it was saved/exported as DXF (not DWG) from AutoCAD.");
   const unitsResolution = resolveUnits(dxf, units);
   const result = classifyDxf(dxf, UNIT_TO_MM[unitsResolution.effective]);
+  // "recognize the type of drawing and work accordingly" — a plan-view
+  // floor layout gets modeled as before; an elevation/section sheet (see
+  // detectNonPlanDrawing's doc in classify.ts) is reported clearly instead
+  // of silently producing an empty model.
+  const nonPlanReason = detectNonPlanDrawing(dxf, result);
+  if (nonPlanReason) throw new Error(nonPlanReason);
   return { result, unitsResolution };
 }
 
