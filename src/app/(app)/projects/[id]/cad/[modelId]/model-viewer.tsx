@@ -34,6 +34,12 @@ export function ModelViewer({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneGroupRef = useRef<THREE.Group | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
+  // The model's own auto-fit framing (center + a size scale), captured once
+  // per build so the on-screen zoom/fit buttons below can move the camera
+  // without re-walking the whole scene graph on every tap.
+  const fitRef = useRef<{ center: THREE.Vector3; maxDim: number } | null>(null);
   const [validation, setValidation] = useState<ValidationRow[]>([]);
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
@@ -113,6 +119,17 @@ export function ModelViewer({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.copy(center);
     controls.enableDamping = true;
+    // Without explicit bounds OrbitControls' default is 0..Infinity, so a
+    // pinch/scroll that overshoots can dolly the camera inside the geometry
+    // (looks like "nothing is happening") or out to a speck. Scaling the
+    // bounds to this model's own size keeps zoom usable at any scale, from
+    // a small room to a large multi-wing site.
+    controls.minDistance = maxDim * 0.01;
+    controls.maxDistance = maxDim * 25;
+
+    cameraRef.current = camera;
+    controlsRef.current = controls;
+    fitRef.current = { center: center.clone(), maxDim };
 
     let raf = 0;
     const animate = () => {
@@ -135,6 +152,9 @@ export function ModelViewer({
       window.removeEventListener("resize", onResize);
       controls.dispose();
       renderer.dispose();
+      cameraRef.current = null;
+      controlsRef.current = null;
+      fitRef.current = null;
       group.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
           obj.geometry.dispose();
@@ -159,6 +179,37 @@ export function ModelViewer({
       });
     };
   }, [entities, windowSillMm]);
+
+  /*
+    Pinch-to-zoom on the canvas should already work (OrbitControls sets
+    touch-action:none on it), but on a phone two-finger gestures over a
+    small embedded viewer are easy to miss or mistake for a one-finger
+    orbit drag — reported as "not able to zoom". These buttons give a
+    tap-driven way to zoom that doesn't depend on a multi-touch gesture
+    landing cleanly on the canvas at all, which is the reliable fix
+    regardless of what's making pinch itself unreliable on a given phone.
+  */
+  function zoomBy(factor: number) {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!camera || !controls) return;
+    const offset = camera.position.clone().sub(controls.target);
+    const dist = THREE.MathUtils.clamp(offset.length() * factor, controls.minDistance, controls.maxDistance);
+    offset.setLength(dist);
+    camera.position.copy(controls.target).add(offset);
+    controls.update();
+  }
+
+  function resetView() {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    const fit = fitRef.current;
+    if (!camera || !controls || !fit) return;
+    const { center, maxDim } = fit;
+    camera.position.set(center.x + maxDim * 0.9, center.y + maxDim * 0.75, center.z + maxDim * 0.9);
+    controls.target.copy(center);
+    controls.update();
+  }
 
   function downloadBlob(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob);
@@ -200,8 +251,21 @@ export function ModelViewer({
 
   return (
     <div className="space-y-4">
-      <div ref={containerRef} className="card overflow-hidden" style={{ height: 420 }} />
-      <p className="text-center text-xs text-muted">Drag to orbit, scroll to zoom.</p>
+      <div className="relative">
+        <div ref={containerRef} className="card overflow-hidden" style={{ height: 420, touchAction: "none" }} />
+        <div className="absolute right-2 bottom-2 flex flex-col gap-1">
+          <button type="button" onClick={() => zoomBy(0.7)} aria-label="Zoom in" className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-foreground shadow active:bg-white">
+            <Icon name="plus" className="h-5 w-5" />
+          </button>
+          <button type="button" onClick={() => zoomBy(1 / 0.7)} aria-label="Zoom out" className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-foreground shadow active:bg-white">
+            <Icon name="minus" className="h-5 w-5" />
+          </button>
+          <button type="button" onClick={resetView} aria-label="Reset view" className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-foreground shadow active:bg-white">
+            <Icon name="maximize" className="h-5 w-5" />
+          </button>
+        </div>
+      </div>
+      <p className="text-center text-xs text-muted">Drag to orbit, pinch or use the +/− buttons to zoom.</p>
 
       <div className="card p-4">
         <div className="mb-3 flex items-center justify-between">
