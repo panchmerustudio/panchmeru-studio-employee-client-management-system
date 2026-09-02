@@ -143,10 +143,25 @@ function PlanSvg({ entities }: { entities: CadEntityInput[] }) {
   );
 }
 
-export function SourceDrawing2D({ entities }: { entities: CadEntityInput[] }) {
+export function SourceDrawing2D({
+  entities,
+  mode,
+  onModeChange,
+}: {
+  entities: CadEntityInput[];
+  // Controlled from ModelViewer, not owned here — this same toggle now also
+  // decides which entities the 3D scene itself builds from (see
+  // model-viewer.tsx's own doc on sceneEntities for why: a plan and an
+  // elevation on the same sheet share no real coordinate frame, so showing
+  // both in the SAME 3D scene at once produced a disconnected mess, not
+  // just a 2D/3D mismatch). Keeping one shared source of truth means this
+  // flat read-out and the 3D view can never disagree about which view is
+  // currently on screen.
+  mode: "elevation" | "plan";
+  onModeChange: (mode: "elevation" | "plan") => void;
+}) {
   const elevationPanels = useMemo(() => entities.filter((e) => e.type === "elevation_panel"), [entities]);
   const hasPlan = useMemo(() => entities.some((e) => e.type === "wall" || e.type === "room"), [entities]);
-  const [mode, setMode] = useState<"elevation" | "plan">(elevationPanels.length > 0 ? "elevation" : "plan");
   const [panelIndex, setPanelIndex] = useState(0);
 
   if (elevationPanels.length === 0 && !hasPlan) return null;
@@ -157,10 +172,10 @@ export function SourceDrawing2D({ entities }: { entities: CadEntityInput[] }) {
         <p className="text-xs font-medium text-muted">Source drawing (2D, as read off your file)</p>
         {elevationPanels.length > 0 && hasPlan && (
           <div className="flex gap-1 text-xs">
-            <button type="button" onClick={() => setMode("elevation")} className={`rounded px-2 py-1 ${mode === "elevation" ? "bg-slate-800 text-white" : "bg-slate-100 text-foreground"}`}>
+            <button type="button" onClick={() => onModeChange("elevation")} className={`rounded px-2 py-1 ${mode === "elevation" ? "bg-slate-800 text-white" : "bg-slate-100 text-foreground"}`}>
               Elevation
             </button>
-            <button type="button" onClick={() => setMode("plan")} className={`rounded px-2 py-1 ${mode === "plan" ? "bg-slate-800 text-white" : "bg-slate-100 text-foreground"}`}>
+            <button type="button" onClick={() => onModeChange("plan")} className={`rounded px-2 py-1 ${mode === "plan" ? "bg-slate-800 text-white" : "bg-slate-100 text-foreground"}`}>
               Plan
             </button>
           </div>

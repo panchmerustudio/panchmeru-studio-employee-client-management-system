@@ -102,11 +102,33 @@ export function ModelViewer({
   const hasSourceDrawing = entities.some((e) => e.type === "elevation_panel" || e.type === "wall" || e.type === "room");
   const [showDrawing, setShowDrawing] = useState(true);
 
+  // A single sheet can carry BOTH a floor plan and an elevation view (see
+  // buildElevationPanel's own placement doc in build-scene.ts) — but the
+  // two have no reliable shared coordinate frame: they're unrelated views
+  // the drafter happened to put on the same sheet, at whatever scale each
+  // one was drawn at. Building both into ONE 3D scene at once (the old,
+  // only behavior here) placed the elevation panel "in front of" the
+  // plan's walls as a stated, not measured, default — which for a plan
+  // drawn much smaller than the facade reads as a handful of disconnected
+  // wall stubs scattered at the elevation's base, not a real building
+  // (a real report against exactly this: "still wrong see that it made").
+  // Rather than invent a spatial relationship the file never gave us, this
+  // reuses the SAME elevation/plan toggle source-drawing-2d.tsx already
+  // has for its flat read-out, lifted up here so it ALSO controls which
+  // entities the 3D scene builds from — one coherent view at a time.
+  const hasElevationPanel = entities.some((e) => e.type === "elevation_panel");
+  const hasPlanContent = entities.some((e) => e.type === "wall" || e.type === "room");
+  const [viewMode, setViewMode] = useState<"elevation" | "plan">(hasElevationPanel ? "elevation" : "plan");
+  const sceneEntities =
+    hasElevationPanel && hasPlanContent
+      ? entities.filter((e) => (viewMode === "elevation" ? e.type === "elevation_panel" : e.type !== "elevation_panel"))
+      : entities;
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    const { group, validation: v, focusBox, focusKind, floorRegions } = buildScene(entities, { windowSillMm });
+    const { group, validation: v, focusBox, focusKind, floorRegions } = buildScene(sceneEntities, { windowSillMm });
     sceneGroupRef.current = group;
     floorRegionsRef.current = floorRegions;
     setValidation(v);
@@ -340,7 +362,8 @@ export function ModelViewer({
         }
       });
     };
-  }, [entities, windowSillMm]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sceneEntities is a pure derivation of [entities, viewMode]; listing entities+viewMode (not the freshly-filtered array itself) avoids re-running this on every render.
+  }, [entities, windowSillMm, viewMode]);
 
   /*
     Pinch-to-zoom on the canvas should already work (OrbitControls sets
@@ -554,7 +577,7 @@ export function ModelViewer({
       <div className={hasSourceDrawing && showDrawing ? "grid gap-3 md:grid-cols-2" : ""}>
         {hasSourceDrawing && showDrawing && (
           <div style={{ height: 420 }}>
-            <SourceDrawing2D entities={entities} />
+            <SourceDrawing2D entities={entities} mode={viewMode} onModeChange={setViewMode} />
           </div>
         )}
         <div className="relative">
