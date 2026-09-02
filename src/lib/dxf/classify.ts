@@ -1246,6 +1246,47 @@ export function partitionByViewTitles(dxf: IDxf, scale: number, opts?: { preferr
     groups[bestIdx].push(e);
   }
 
+  // Nearest-title-to-ENTITY assignment (above) breaks when a title label
+  // sits at the far EDGE of its own view rather than near its middle — a
+  // real reference file titles its "FRONT ELEVATION" right at the very
+  // bottom of that facade, so real elevation content up near the roofline
+  // (window/frame outlines drawn on the plain "wall" layer, not a
+  // door/window-named one) ends up geometrically NEARER to a totally
+  // different title (that sheet's "GROUND FLOOR PLAN", sitting between
+  // the two views) than to its own. Wall-pairing those stray outline
+  // fragments alongside genuine ground-floor walls produced nonsense
+  // triangular/star geometry — confirmed against that exact file's real
+  // coordinates, not assumed.
+  //
+  // A single correction pass reclaims this: each elevation-kind anchor's
+  // own group, once assigned, has a real MEASURED footprint (bbox) — a
+  // stronger, more specific test than a single point-to-point title
+  // distance. Anything ELSE on the sheet whose centroid falls inside that
+  // footprint belongs to the elevation, regardless of which title
+  // happened to be nearest by raw distance; it's moved into the
+  // elevation's own group so it's measured as real elevation detail (not
+  // just deleted from the plan) and stays out of every other view's
+  // wall-pairing, the same as anything nearest-title assignment got right
+  // the first time.
+  for (let i = 0; i < anchors.length; i++) {
+    if (anchors[i].kind !== "elevation") continue;
+    const elevationPts = groups[i].flatMap((e) => entityClusterPoints(e).map((p) => scalePt(p, scale)));
+    const elevationBox = bbox(elevationPts);
+    if (!elevationBox) continue;
+    for (let j = 0; j < anchors.length; j++) {
+      if (j === i) continue;
+      const group = groups[j];
+      for (let k = group.length - 1; k >= 0; k--) {
+        const centroid = centroidOf(entityClusterPoints(group[k]).map((p) => scalePt(p, scale)));
+        if (!centroid) continue;
+        if (centroid.x >= elevationBox.minX && centroid.x <= elevationBox.maxX && centroid.y >= elevationBox.minY && centroid.y <= elevationBox.maxY) {
+          groups[i].push(group[k]);
+          group.splice(k, 1);
+        }
+      }
+    }
+  }
+
   const planIdxs = anchors.map((a, i) => i).filter((i) => anchors[i].kind === "plan");
   const eligiblePlanIdxs = planIdxs.filter((i) => anchors[i].levelRank <= PRIMARY_PLAN_MAX_RANK);
   // A person can say which level they actually want modeled (see

@@ -692,6 +692,64 @@ check(
 );
 check("layer-only rectangle: a genuinely open (not closed) rectangle-shaped outline on the same layer is not read as an opening", !layerRectOpenings.some((o) => o.xMm === 2000));
 
+/*
+  Regression case for "still wrong see that it made" (the fan/star-shaped
+  broken wall render) — nearest-title assignment compares each entity's
+  centroid to a title's own TEXT position, which breaks when a title is
+  stamped at the far EDGE of its own view rather than near its middle. A
+  real file titles "FRONT ELEVATION" right at the very bottom of that
+  facade; real elevation content near the roofline (drawn on the plain
+  "wall" layer, not a door/window-named one) ends up geometrically nearer
+  to a completely different title ("GROUND FLOOR PLAN", sitting between
+  the two views) than to its own — and gets wall-paired into nonsense
+  triangular geometry alongside genuine ground-floor walls as a result.
+*/
+const edgeTitleDxf = {
+  header: {},
+  blocks: {},
+  entities: [
+    // GROUND FLOOR PLAN: title near the origin, with a small real room.
+    { type: "MTEXT", layer: "TEXT", handle: 800, text: "GROUND FLOOR PLAN", position: { x: 0, y: 0 } },
+    { type: "LINE", layer: "wall", handle: 801, vertices: [{ x: 0, y: 0 }, { x: 4000, y: 0 }] },
+    { type: "LINE", layer: "wall", handle: 802, vertices: [{ x: 4000, y: 0 }, { x: 4000, y: -2500 }] },
+    { type: "LINE", layer: "wall", handle: 803, vertices: [{ x: 4000, y: -2500 }, { x: 0, y: -2500 }] },
+    { type: "LINE", layer: "wall", handle: 804, vertices: [{ x: 0, y: -2500 }, { x: 0, y: 0 }] },
+    // FRONT ELEVATION: a tall facade outline, but its OWN title is
+    // stamped near the BOTTOM edge (y=-9800), far from the roofline.
+    { type: "MTEXT", layer: "TEXT", handle: 810, text: "FRONT ELEVATION", position: { x: 200, y: -9800 } },
+    { type: "LINE", layer: "wall", handle: 811, vertices: [{ x: 0, y: -9500 }, { x: 8000, y: -9500 }] },
+    { type: "LINE", layer: "wall", handle: 812, vertices: [{ x: 8000, y: -9500 }, { x: 8000, y: -3000 }] },
+    { type: "LINE", layer: "wall", handle: 813, vertices: [{ x: 8000, y: -3000 }, { x: 0, y: -3000 }] },
+    { type: "LINE", layer: "wall", handle: 814, vertices: [{ x: 0, y: -3000 }, { x: 0, y: -9500 }] },
+    // A real piece of the elevation's own window-frame linework, up near
+    // its roofline (y=-3200 to -3700) — geometrically much closer to
+    // GROUND FLOOR PLAN's title (0,0) than to FRONT ELEVATION's own title
+    // (200,-9800), so nearest-title-to-entity assignment alone puts it in
+    // the WRONG group.
+    { type: "LINE", layer: "wall", handle: 820, vertices: [{ x: 3000, y: -3200 }, { x: 3000, y: -3700 }] },
+  ],
+} as unknown as IDxf;
+const edgeTitlePartition = partitionByViewTitles(edgeTitleDxf, 1);
+check("edge-titled elevation: partitionByViewTitles engages (2 titles found)", edgeTitlePartition !== null);
+check(
+  "edge-titled elevation: the roofline linework (nearer to the WRONG title by raw distance) is still reclaimed into the elevation, not left polluting the plan",
+  !!edgeTitlePartition?.excludeHandles.has("820")
+);
+check(
+  "edge-titled elevation: the reclaimed roofline linework is measured as real elevation detail (a stroke), not just discarded",
+  (edgeTitlePartition?.elevationViews[0]?.strokes.length ?? 0) >= 5 // 4 outline edges + the reclaimed roofline segment
+);
+check(
+  "edge-titled elevation: the real ground-floor room's own walls are NOT swept into the elevation — only content actually inside its measured footprint is reclaimed",
+  !edgeTitlePartition?.excludeHandles.has("801") && !edgeTitlePartition?.excludeHandles.has("802") && !edgeTitlePartition?.excludeHandles.has("803") && !edgeTitlePartition?.excludeHandles.has("804")
+);
+const edgeTitleGroundResult = classifyDxf(edgeTitleDxf, 1, { excludeHandles: edgeTitlePartition?.excludeHandles });
+const edgeTitleGroundWalls = edgeTitleGroundResult.entities.filter((e) => e.type === "wall");
+check(
+  "edge-titled elevation: the ground floor plan itself still classifies its own real 4 walls, nothing missing and nothing extra from the elevation",
+  edgeTitleGroundWalls.length === 4
+);
+
 function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"} — ${label}`);
   if (!ok) process.exitCode = 1;
